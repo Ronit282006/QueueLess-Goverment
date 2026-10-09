@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: queueless
+      POSTGRES_USER: queueless
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-queueless_dev}
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queueless"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  seed:
+    build: ./backend
+    command: ["python", "-m", "app.seed"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://queueless:${POSTGRES_PASSWORD:-queueless_dev}@postgres:5432/queueless
+    depends_on:
+      postgres: {condition: service_healthy}
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://queueless:${POSTGRES_PASSWORD:-queueless_dev}@postgres:5432/queueless
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:5173
+      ACTIVE_COUNTERS: 4
+      BACKGROUND_WORKERS_ENABLED: "false"
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      seed: {condition: service_completed_successfully}
+  frontend:
+    image: node:22-alpine
+    working_dir: /web
+    volumes: ["./frontend:/web", "/web/node_modules"]
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports: ["5173:5173"]
+    environment: {VITE_API_URL: http://localhost:8000}
+    depends_on: [backend]
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://queueless:${POSTGRES_PASSWORD:-queueless_dev}@postgres:5432/queueless
+      REDIS_URL: redis://redis:6379/0
+      EMAIL_MODE: ${EMAIL_MODE:-log}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-queueless@demo.local}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      seed: {condition: service_completed_successfully}
+volumes:
+  pgdata:
