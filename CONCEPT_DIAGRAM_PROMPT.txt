@@ -1,0 +1,19 @@
+﻿Create a clear, modern concept (high-level system concept) diagram image for 'QueueLess Government Office'.
+
+Title: QueueLess Government Office - Concept Diagram
+
+Purpose: Illustrate the core idea/concept, not technical implementation. Horizontal layout preferred (16:9 or 1600x900px).
+
+Include key concepts:
+- Problem: Long physical queues, uncertain wait times, overcrowding, poor citizen experience
+- Solution: AI-assisted virtual queue system (QueueLess)
+- Core Concepts: Virtual tokens, Smart ETA (explainable), Just-in-time arrival, Fair queueing with priorities
+- Stakeholders: Citizens, Staff, Administrators
+- Key Benefits: Reduced wait times, Predictability, Fairness, Transparency, Efficiency, Accessibility
+- Value Flow: Citizen books token -> Gets ETA -> Arrives when ready -> Served faster -> Data-driven improvements
+- Trust/Transparency elements: Explainable predictions, confidence, audit trail
+
+Visual style: Minimal flat illustration style, soft colors, simple icons (people, clock, ticket/token, building, arrows). Color palette: teal/blue (#0F7BFF) for trust, green (#10B981) for efficiency, amber (#F59E0B) for fairness, slate for neutral. Use arrows to show flow. Keep text concise and readable. No deep technical boxes (no DB/Redis/API unless abstracted as "Cloud Platform").
+
+Output as high-quality image, suitable for project overview, pitch, presentation cover.
+

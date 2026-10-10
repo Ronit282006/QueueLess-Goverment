@@ -1,10 +1,17 @@
 import type {
+  AdminCounter,
   AuthResponse,
   AuthUser,
   Office,
   QueueSnapshot,
   Service,
+  StaffAssignment,
   StaffCounter,
+  StaffCreatedResult,
+  StaffMember,
+  StaffOTPSendResult,
+  StaffOTPVerifyResult,
+  StaffScope,
   Token,
 } from './types'
 
@@ -103,6 +110,7 @@ export const api = {
   me: () => request<AuthUser>('/api/auth/me'),
 
   // Staff
+  staffScope: () => request<StaffScope>('/api/staff/scope'),
   dashboard: (officeId?: number) =>
     request<Record<string, unknown>>(`/api/staff/dashboard${officeId ? `?office_id=${officeId}` : ''}`),
   counters: (officeId: number) => request<StaffCounter[]>(`/api/staff/counters?office_id=${officeId}`),
@@ -130,6 +138,8 @@ export const api = {
     request<Record<string, unknown>[]>(`/api/admin/priority-rules${officeId ? `?office_id=${officeId}` : ''}`),
   createPriorityRule: (payload: Record<string, unknown>) =>
     request<Record<string, unknown>>('/api/admin/priority-rules', { method: 'POST', body: JSON.stringify(payload) }),
+  updatePriorityRule: (id: number, payload: Record<string, unknown>) =>
+    request<Record<string, unknown>>(`/api/admin/priority-rules/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   recommendations: (officeId: number, refresh: boolean) =>
     request<{ generated: number; items: Record<string, unknown>[] }>(
       `/api/admin/recommendations?office_id=${officeId}&refresh=${refresh}`,
@@ -140,6 +150,9 @@ export const api = {
   notifications: (limit = 50) => request<Record<string, unknown>[]>(`/api/admin/notifications?limit=${limit}`),
   retrain: () => request<Record<string, unknown>>('/api/admin/models/retrain', { method: 'POST' }),
   createIncident: (payload: Record<string, unknown>) => request<Record<string, unknown>>('/api/staff/incidents', { method: 'POST', body: JSON.stringify(payload) }),
+  listIncidents: (officeId?: number) => request<Record<string, unknown>[]>(officeId ? `/api/staff/incidents?office_id=${officeId}` : '/api/staff/incidents'),
+  resolveIncident: (incidentId: number) => request<Record<string, unknown>>(`/api/staff/incidents/${incidentId}/resolve`, { method: 'POST' }),
+  listArrivedIncidentTokens: (officeId?: number) => request<Record<string, unknown>[]>(officeId ? `/api/staff/incidents/arrived?office_id=${officeId}` : '/api/staff/incidents/arrived'),
   rebookArrivedIncidentTicket: (tokenId: number) => request<Record<string, unknown>>(`/api/staff/incidents/tokens/${tokenId}/transfer`, { method: 'POST' }),
   updateOfficeSchedule: (officeId: number, payload: Record<string, unknown>) =>
     request<Record<string, unknown>>(`/api/admin/offices/${officeId}/schedule`, { method: 'PATCH', body: JSON.stringify(payload) }),
@@ -150,6 +163,27 @@ export const api = {
     request<Record<string, unknown>>(`/api/admin/offices/${officeId}/holidays/${holidayId}`, { method: 'DELETE' }),
   updateOfficeLocation: (officeId: number, address: string, locationInstructions: string) =>
     request<Record<string, unknown>>(`/api/admin/offices/${officeId}/location`, { method: 'PATCH', body: JSON.stringify({ address, location_instructions: locationInstructions }) }),
+
+  // Admin · Staff management & counter assignments
+  adminStaffOtp: (fullName: string, email: string, password: string, confirmPassword: string) =>
+    request<StaffOTPSendResult>('/api/admin/staff/otp', {
+      method: 'POST',
+      body: JSON.stringify({ full_name: fullName, email, password, confirm_password: confirmPassword }),
+    }),
+  adminStaffOtpVerify: (email: string, otp: string) =>
+    request<StaffOTPVerifyResult>('/api/admin/staff/otp/verify', { method: 'POST', body: JSON.stringify({ email, otp }) }),
+  adminCreateStaff: (email: string) =>
+    request<StaffCreatedResult>('/api/admin/staff', { method: 'POST', body: JSON.stringify({ email }) }),
+  adminStaff: () => request<StaffMember[]>('/api/admin/staff'),
+  adminStaffAssignments: (userId: number) =>
+    request<StaffAssignment[]>(`/api/admin/staff/${userId}/assignments`),
+  adminSetStaffAssignments: (userId: number, payload: { office_id: number; counter_ids: number[]; title: string; shift_start: string; shift_end: string }) =>
+    request<{ office_id: number; assignments: StaffAssignment[]; staff_id: number }>(
+      `/api/admin/staff/${userId}/assignments`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    ),
+  adminCounters: (officeId: number) =>
+    request<AdminCounter[]>(`/api/admin/counters?office_id=${officeId}`),
 
   // Analytics
   analytics: {
@@ -169,4 +203,4 @@ export const api = {
   },
 }
 
-export type { Office, QueueSnapshot, Service, StaffCounter, Token }
+export type { AdminCounter, Office, QueueSnapshot, Service, StaffCounter, Token }

@@ -50,7 +50,18 @@ class CounterService(Base):
 
 
 class StaffAssignment(Base):
+    """Active assignment of a staff member to a counter within an office.
+
+    A staff member may hold several active rows (one per counter) so members
+    can handle multiple counters. A counter may also be shared by more than one
+    staff member; the de-facto concurrency rule is enforced at write time
+    (only the assigned staff may operate the counter, and the counter busy
+    state serialises call/start/complete). The (user, counter) pair is unique
+    so two admins cannot create conflicting duplicate rows for the same member.
+    """
+
     __tablename__ = "staff_assignments"
+    __table_args__ = (UniqueConstraint("user_id", "counter_id", name="uq_staff_assignment_user_counter"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -64,4 +75,7 @@ class StaffAssignment(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

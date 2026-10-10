@@ -17,6 +17,7 @@ from ..models import Office, OfficeHoliday, OfficeIncident, Service, Token, User
 from ..models.enums import NotificationKind, TokenStatus
 from ..security import get_optional_user, require_admin, require_staff
 from ..services import audit_service, notify_service, queue_service, token_service, token_view
+from ..services.assignment_service import require_office_scope
 
 router = APIRouter(prefix="/api", tags=["Incidents"])
 
@@ -123,6 +124,7 @@ def create_incident(
     office = db.get(Office, body.office_id)
     if office is None:
         raise ApiException(404, "office_not_found", "Office not found.")
+    require_office_scope(db, staff, office.id)
     if body.service_id is not None:
         service = db.get(Service, body.service_id)
         if service is None or service.department.office_id != office.id:
@@ -171,6 +173,82 @@ def create_incident(
             "description": incident.description, "response_deadline": incident.response_deadline.isoformat(),
             "status": incident.status, "notified_count": notified_count,
             "arrived_for_staff": arrived_for_staff}
+
+
+@router.get("/staff/incidents")
+def list_incidents(
+    office_id: int | None = None,
+    staff: User = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(OfficeIncident)
+    if office_id is not None:
+        query = query.where(OfficeIncident.office_id == office_id)
+    rows = db.scalars(query.order_by(OfficeIncident.id.desc()).limit(50)).all()
+    return [
+        {
+            "id": r.id,
+            "office_id": r.office_id,
+            "service_id": r.service_id,
+            "incident_type": r.incident_type,
+            "description": r.description,
+            "location_instructions": r.location_instructions,
+            "starts_at": r.starts_at.isoformat(),
+            "ends_at": r.ends_at.isoformat(),
+            "response_deadline": r.response_deadline.isoformat(),
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) else None,
+            "resolved_at": r.resolved_at.isoformat() if getattr(r, "resolved_at", None) else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/staff/incidents/{incident_id}/resolve")
+def resolve_incident(
+    incident_id: int,
+    staff: User = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    incident = db.get(OfficeIncident, incident_id)
+    if incident is None:
+        raise ApiException(404, "incident_not_found", "Incident not found.")
+    require_office_scope(db, staff, incident.office_id)
+    incident.status = "RESOLVED"
+    incident.resolved_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db, action="office.incident_resolved", actor_id=staff.id, actor_role=staff.role,
+        entity_type="office_incident", entity_id=incident.id, office_id=incident.office_id,
+        detail={"description": incident.description},
+    )
+    db.commit()
+    return {"id": incident.id, "status": "RESOLVED", "resolved_at": incident.resolved_at.isoformat()}
+
+
+@router.get("/staff/incidents/arrived")
+def list_arrived_incident_tokens(
+    office_id: int | None = None,
+    staff: User = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    query = select(Token).where(
+        Token.incident_id.is_not(None),
+        Token.status == TokenStatus.ARRIVED.value,
+        Token.incident_response_status.in_(("PENDING", "STAFF_REVIEW")),
+    )
+    if office_id is not None:
+        query = query.where(Token.office_id == office_id)
+    tokens = db.scalars(query.order_by(Token.id.desc()).limit(50)).all()
+    return [
+        {
+            "id": t.id,
+            "label": t.label,
+            "status": t.status,
+            "incident_id": t.incident_id,
+            "incident_response_status": t.incident_response_status,
+        }
+        for t in tokens
+    ]
 
 
 @router.post("/tokens/{reference}/incident-response")
@@ -252,6 +330,7 @@ def staff_rebook_arrived_ticket(
     token = db.get(Token, token_id)
     if token is None or token.incident_id is None:
         raise ApiException(404, "incident_ticket_not_found", "Incident ticket not found.")
+    require_office_scope(db, staff, token.office_id)
     if token.status != TokenStatus.ARRIVED.value or token.incident_response_status not in ("PENDING", "STAFF_REVIEW"):
         raise ApiException(409, "ticket_not_rebookable", "Only an arrived ticket awaiting incident help can be rebooked here.")
     office = db.get(Office, token.office_id)

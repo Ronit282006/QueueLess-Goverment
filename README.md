@@ -9,6 +9,7 @@ QueueLess is an AI-assisted queue operating system for public service offices. C
 - Atomic per-office/service token sequences, PostgreSQL persistence, Redis queue cache, distributed rate limits, and Redis Pub/Sub WebSocket fan-out.
 - Explainable wait estimates that use queue position, active counters, service history, congestion, and no-show observations. Gradient-boosting models are trained/evaluated from labelled service records; measured MAE/R² and sample count are exposed. Estimates fall back to a transparent analytical model when evidence is weak.
 - Staff counter availability, call/start/skip/complete workflow, service-time recording, and audit history.
+- Admin-managed staff accounts (email-verified via a one-time code before the account is created) and per-counter assignments that define exactly which counters and offices a member may operate, including counter-level authorization at every staff action.
 - Admin-configurable priority rules, human-approved counter recommendations, analytics (demand, peak hours, SLA, efficiency, feedback), and operational health.
 - Background email delivery with log mode by default, SMTP configuration, retries, approach-stage updates, and no-show grace handling.
 - English/Hindi/Gujarati locale files, accessibility text/contrast controls, responsive React UI, and a concurrent load script.
@@ -28,6 +29,16 @@ Background worker (email delivery + no-show/stage sweeps)
 ```
 
 Compose provisions Postgres, Redis, a one-shot idempotent seed job, API, worker, and frontend. The API can be run as multiple replicas behind a load balancer; all durable state is in PostgreSQL, Redis carries cross-instance realtime events, and token numbers are allocated under a database transaction/row lock. SQLite is intended only for isolated tests and lightweight local development.
+
+## Frontend design system
+
+The UI is a token-driven design system rather than ad-hoc CSS. Colors, radii, shadows, and typography are CSS custom properties declared in `frontend/src/style.css` and mapped into Tailwind's `theme.extend` in `frontend/tailwind.config.js`, so components style against semantic names (`bg-surface`, `text-ink`, `border-line`, `text-brand`) instead of raw hex values. Theme variants are layered on `:root`:
+
+- Dark mode via `[data-theme='dark']`.
+- High contrast via `html.ql-high-contrast`.
+- Large text via `html.ql-large-text`.
+
+These are toggled through `useTheme()` (`frontend/src/lib/theme.tsx`), and preferences persist across reloads. Reusable primitives live in `frontend/src/components/ui/` (`Button`, `Card`, `Badge`, `Stat`, `DataTable`, `Tabs`/`Stepper`, `Modal`/`ConfirmDialog`/`SlideOver`, `Popover`, `Toast`, `SegmentedControl`, `OtpInput`, `ProgressRing`/`Meter`, `Skeleton`, `EmptyState`, `Page`) and are re-exported from `components/ui/index.ts`. Charts (Recharts) read the active palette at runtime so they stay legible in every theme. The layout (`components/Layout.tsx`) provides a responsive header, sidebar/drawer, and mobile bottom navigation, honors `prefers-reduced-motion`, targets WCAG 2.2 AA contrast and 44px touch targets, and renders all copy through the `en`/`hi`/`gu` locale files.
 
 ## Run locally
 
@@ -59,7 +70,7 @@ The queue estimate decomposes the wait into people ahead, counter capacity, serv
 
 ## API and operations
 
-FastAPI OpenAPI groups cover Authentication, Services, Queue, Tokens, Staff, Admin, Analytics, Notifications, System, and WebSocket. Main endpoints include `/api/auth/*`, `/api/offices`, `/api/services/{id}`, `/api/queue`, `/api/tokens`, `/api/staff/*`, `/api/admin/*`, `/api/analytics/*`, and `/ws/queue` / `/ws/tokens/{reference}`.
+FastAPI OpenAPI groups cover Authentication, Services, Queue, Tokens, Staff, Admin, Analytics, Notifications, System, and WebSocket. Main endpoints include `/api/auth/*`, `/api/offices`, `/api/services/{id}`, `/api/queue`, `/api/tokens`, `/api/staff/*` (including `/api/staff/scope`), `/api/admin/*` (including `/api/admin/staff/*` staff management and `/api/admin/counters`), `/api/analytics/*`, and `/ws/queue` / `/ws/tokens/{reference}`.
 
 The dedicated worker uses the same PostgreSQL and Redis as the API. Email defaults to log mode; no paid provider is required. Health endpoints distinguish public API health from admin-only operational detail. Database migrations are managed by Alembic; Compose bootstraps a fresh local database from SQLAlchemy metadata for demo convenience.
 

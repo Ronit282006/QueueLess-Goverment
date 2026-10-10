@@ -26,6 +26,7 @@ from .models import Notification, NotificationLog, Office, Token, TokenStatus, U
 from .models.enums import NotificationKind, NotificationStatus, TokenStage
 from .services import audit_service, prediction_service, queue_service, token_service
 from .services.cache_service import get_redis, publish
+from .services.email_templates import render_email_html
 from .services.notify_service import EMAIL_QUEUE_KEY, enqueue
 
 logger = logging.getLogger("queueless.worker")
@@ -88,6 +89,9 @@ def _build_message(recipient: str, subject: str, body: str, sender: str, qr_refe
     # Spam filters treat mail without a Message-ID as suspicious.
     message["Message-ID"] = make_msgid(domain=sender.split("@")[-1] or "queueless.local")
     message.set_content(body)
+    # Send multipart/alternative: the plain text body stays the source of truth
+    # (tests, logs, screen readers) while clients render the formatted HTML.
+    message.add_alternative(render_email_html(subject, body), subtype="html")
     if qr_reference:
         from .services.qr_service import qr_data_url
 

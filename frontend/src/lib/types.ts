@@ -109,3 +109,52 @@ export type StaffCounter = {
 }
 
 export type AuthUser = { id: number; email: string; full_name: string; role: string }
+
+export type StaffScope = {
+  offices: number[]
+  counters: number[]
+  counters_by_office: Record<string, number[]>
+}
+
+export type StaffAssignment = {
+  office_id: number
+  counter_id: number | null
+  title: string
+  shift_start: string
+  shift_end: string
+  is_active: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+export type StaffMember = {
+  id: number
+  email: string
+  full_name: string
+  role: string
+  is_active: boolean
+  created_at: string | null
+  offices: number[]
+  counters: number[]
+  assignments: StaffAssignment[]
+}
+
+export type AdminCounter = {
+  id: number
+  number: number
+  name: string
+  status: string
+  office_id: number
+  staff: { user_id: number; email: string; full_name: string }[]
+}
+
+export type StaffOTPSendResult = { message: string; expires_in_seconds: number }
+export type StaffOTPVerifyResult = { message: string; verified: boolean }
+export type StaffCreatedResult = {
+  id: number
+  email: string
+  full_name: string
+  role: string
+  is_active: boolean
+  message: string
+}

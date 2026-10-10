@@ -157,7 +157,7 @@ def recommendations(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    resolved = office_id or admin.office_id or db.scalar(select(Office.id).order_by(Office.id))
+    resolved = office_id or db.scalar(select(Office.id).order_by(Office.id))
     if resolved is None:
         raise ApiException(404, "not_found", "No office found.")
     created = generate_recommendations(db, resolved, admin) if refresh else []

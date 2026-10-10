@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 
 def _staff_headers(db):
-    from app.models import User
+    from app.models import Counter, StaffAssignment, User
     from app.security import create_access_token, hash_password
 
     staff = User(
@@ -20,6 +20,15 @@ def _staff_headers(db):
     )
     db.add(staff)
     db.flush()
+    first_per_office: dict[int, Counter] = {}
+    for counter in db.query(Counter).order_by(Counter.office_id, Counter.number).all():
+        first_per_office.setdefault(counter.office_id, counter)
+    for counter in first_per_office.values():
+        db.add(
+            StaffAssignment(
+                user_id=staff.id, office_id=counter.office_id, counter_id=counter.id, is_active=True
+            )
+        )
     return {"Authorization": f"Bearer {create_access_token(subject=staff.id, role=staff.role)}"}
 
 

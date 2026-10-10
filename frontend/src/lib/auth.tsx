@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { api, setToken } from './api'
+import { api, getToken, setToken } from './api'
 
 export interface SessionUser {
   id: number
@@ -28,6 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true
+    if (!getToken()) {
+      setReady(true)
+      return
+    }
     api
       .me()
       .then((me) => {

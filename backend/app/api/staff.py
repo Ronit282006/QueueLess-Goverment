@@ -31,6 +31,12 @@ from ..models.enums import DataOrigin, NotificationKind
 from ..realtime import hub
 from ..security import require_staff
 from ..services import audit_service, notify_service, queue_service, token_service, token_view
+from ..services.assignment_service import (
+    assigned_counter_ids,
+    assigned_office_ids,
+    require_counter_assignment,
+    require_office_scope,
+)
 
 router = APIRouter(prefix="/api/staff", tags=["Staff"], dependencies=[Depends(require_staff)])
 
@@ -68,23 +74,51 @@ class CallNextRequest(BaseModel):
     service_id: int
 
 
+@router.get("/scope")
+def staff_scope(staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
+    """The offices and counters this member may work on, from their assignments.
+
+    The frontend uses this to hide everything the member has not been assigned,
+    and every counter-level action re-validates against the same table.
+    """
+    offices = assigned_office_ids(db, staff.id)
+    counters = assigned_counter_ids(db, staff.id)
+    return {
+        "offices": offices,
+        "counters": sorted(counters),
+        "counters_by_office": {
+            str(office_id): sorted(assigned_counter_ids(db, staff.id, office_id))
+            for office_id in offices
+        },
+    }
+
+
 @router.get("/dashboard")
 def dashboard(office_id: int | None = None, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    resolved = office_id or staff.office_id
+    resolved = office_id
     if resolved is None:
-        first = db.scalar(select(Counter).order_by(Counter.office_id))
-        resolved = first.office_id if first else None
+        resolved = next(iter(assigned_office_ids(db, staff.id)), None)
     if resolved is None:
-        raise ApiException(404, "not_found", "No office found.")
+        raise ApiException(403, "no_assigned_counters", "No counters have been assigned to your account yet. Please contact your administrator.")
+    require_office_scope(db, staff, resolved)
+    assigned = assigned_counter_ids(db, staff.id, resolved)
     snapshot = queue_service.office_snapshot(db, resolved)
-    counters = db.scalars(select(Counter).where(Counter.office_id == resolved).order_by(Counter.number)).all()
+    counters = [
+        c for c in db.scalars(select(Counter).where(Counter.office_id == resolved).order_by(Counter.number)).all()
+        if c.id in assigned
+    ]
     snapshot["counters"] = [_counter_row(db, c) for c in counters]
     return snapshot
 
 
 @router.get("/counters")
 def list_counters(office_id: int, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> list[dict]:
-    counters = db.scalars(select(Counter).where(Counter.office_id == office_id).order_by(Counter.number)).all()
+    require_office_scope(db, staff, office_id)
+    assigned = assigned_counter_ids(db, staff.id, office_id)
+    counters = [
+        c for c in db.scalars(select(Counter).where(Counter.office_id == office_id).order_by(Counter.number)).all()
+        if c.id in assigned
+    ]
     return [_counter_row(db, c) for c in counters]
 
 
@@ -96,6 +130,7 @@ async def set_counter_status(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     previous_status = counter.status
     try:
         status = CounterStatus(body.status)
@@ -146,6 +181,7 @@ def assign_services(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     valid = set(db.scalars(select(Service.id).where(Service.id.in_(body.service_ids))).all()) if body.service_ids else set()
     if len(valid) != len(set(body.service_ids)):
         raise ApiException(400, "invalid_service", "One or more services do not exist.")
@@ -177,6 +213,7 @@ async def call_next(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     service = db.get(Service, body.service_id)
     if service is None:
         raise ApiException(404, "not_found", "Service not found.")
@@ -226,6 +263,7 @@ async def start_service(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     token = _active_for_counter(db, counter_id)
     if token is None or token.status != TokenStatus.CALLED.value:
         raise ApiException(409, "nothing_called", "There is no called token to start serving.")
@@ -247,6 +285,7 @@ async def complete_service(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     token = _active_for_counter(db, counter_id)
     if token is None or token.status != TokenStatus.SERVING.value:
         raise ApiException(409, "nothing_serving", "There is no token currently being served.")
@@ -288,6 +327,7 @@ async def skip_token(
     db: Session = Depends(get_db),
 ) -> dict:
     counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
     token = _active_for_counter(db, counter_id)
     if token is None or token.status != TokenStatus.CALLED.value:
         raise ApiException(409, "nothing_called", "There is no called token to skip.")
@@ -319,6 +359,7 @@ def staff_queue(
     staff: User = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
+    require_office_scope(db, staff, office_id)
     return queue_service.snapshot(db, office_id, service_id)
 
 

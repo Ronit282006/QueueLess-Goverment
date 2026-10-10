@@ -129,12 +129,3 @@ export function useToken(reference: string | null) {
 
   return { token, error, refresh: fetchToken }
 }
-
-/** Badge class name for a token status. */
-export function statusClass(status: string): string {
-  const s = status.toUpperCase()
-  if (s === 'SERVING' || s === 'COMPLETED') return 'ql-badge ql-badge-ok'
-  if (s === 'CALLED' || s === 'ARRIVED') return 'ql-badge ql-badge-info'
-  if (s === 'SKIPPED' || s === 'CANCELLED' || s === 'EXPIRED') return 'ql-badge ql-badge-alert'
-  return 'ql-badge'
-}

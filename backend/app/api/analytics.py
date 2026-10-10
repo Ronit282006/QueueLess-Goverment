@@ -27,13 +27,23 @@ from ..models import (
     User,
 )
 from ..security import require_staff
+from ..services.assignment_service import assigned_office_ids, require_office_scope
 from ..services.token_service import ACTIVE_STATUSES
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"], dependencies=[Depends(require_staff)])
 
 
-def _resolve_office(db: Session, office_id: int | None) -> Office:
-    office = db.get(Office, office_id) if office_id else db.scalar(select(Office).order_by(Office.id))
+def _resolve_office(db: Session, staff: User, office_id: int | None) -> Office:
+    if office_id is not None:
+        require_office_scope(db, staff, office_id)
+        office = db.get(Office, office_id)
+    else:
+        # STAFF members default to their first assigned office; admins may
+        # still view any office by passing office_id explicitly.
+        first_assigned = next(iter(assigned_office_ids(db, staff.id)), None)
+        if first_assigned is None:
+            raise ApiException(403, "no_assigned_counters", "No counters have been assigned to your account yet. Please contact your administrator.")
+        office = db.get(Office, first_assigned)
     if office is None:
         raise ApiException(404, "not_found", "Office not found.")
     return office
@@ -50,7 +60,7 @@ def _wait_minutes_expr():
 
 @router.get("/overview")
 def overview(office_id: int | None = None, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
     total_today = db.scalar(
@@ -101,7 +111,7 @@ def peak_hours(
     staff: User = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     snap = (
         select(
             QueueSnapshot.hour_of_day,
@@ -136,7 +146,7 @@ def demand(
     staff: User = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     day = func.date(Token.created_at).label("day")
     rows = db.execute(
         select(day, func.count().label("tokens"))
@@ -153,7 +163,7 @@ def demand(
 
 @router.get("/efficiency")
 def efficiency(office_id: int | None = None, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     services = db.scalars(
         select(Service).join(Service.department).where(Service.department.has(office_id=office.id))
     ).all()
@@ -205,7 +215,7 @@ def sla(
     staff: User = Depends(require_staff),
     db: Session = Depends(get_db),
 ) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     target = office.sla_target_wait_min
     wait = _wait_minutes_expr()
     within = func.sum(case((wait <= target, 1), else_=0))
@@ -234,7 +244,7 @@ def sla(
 
 @router.get("/feedback")
 def feedback_report(office_id: int | None = None, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     rows = db.execute(
         select(Feedback.rating, func.count().label("n")).where(Feedback.office_id == office.id).group_by(Feedback.rating)
     ).all()
@@ -260,7 +270,7 @@ def feedback_report(office_id: int | None = None, staff: User = Depends(require_
 
 @router.get("/prediction-accuracy")
 def prediction_accuracy(office_id: int | None = None, staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    office = _resolve_office(db, office_id)
+    office = _resolve_office(db, staff, office_id)
     row = db.execute(
         select(
             func.count().label("scored"),

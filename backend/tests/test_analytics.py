@@ -6,7 +6,7 @@ import uuid
 
 def _staff_headers(client, office_id: int) -> dict:
     from app.db import SessionLocal
-    from app.models import Counter, User
+    from app.models import Counter, StaffAssignment, User
     from app.security import create_access_token, hash_password
 
     db = SessionLocal()
@@ -18,6 +18,14 @@ def _staff_headers(client, office_id: int) -> dict:
             role="STAFF",
         )
         db.add(user)
+        db.flush()
+        counter = db.query(Counter).filter(Counter.office_id == office_id).order_by(Counter.number).first()
+        if counter is not None:
+            db.add(
+                StaffAssignment(
+                    user_id=user.id, office_id=office_id, counter_id=counter.id, is_active=True
+                )
+            )
         db.commit()
         db.refresh(user)
         return {"Authorization": f"Bearer {create_access_token(subject=user.id, role=user.role)}"}

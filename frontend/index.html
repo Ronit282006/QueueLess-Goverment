@@ -1,1 +1,33 @@
-﻿<!doctype html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#f6f8f7"/><meta name="description" content="QueueLess lets you check government office queues, prepare your documents and take a virtual token before you travel."/><title>QueueLess - Government Services</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3f5fa" />
+    <meta name="description" content="QueueLess lets you check government office queues, prepare your documents and take a virtual token before you travel." />
+    <meta name="color-scheme" content="light dark" />
+    <title>QueueLess - Government Services</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Noto+Sans+Gujarati:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Apply persisted preferences before paint to avoid a theme flash.
+      (function () {
+        try {
+          var theme = localStorage.getItem('ql_theme') || 'light';
+          var dark = theme === 'dark';
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+          if (localStorage.getItem('ql_large_text') === '1') document.documentElement.classList.add('ql-large-text');
+          if (localStorage.getItem('ql_high_contrast') === '1') document.documentElement.classList.add('ql-high-contrast');
+        } catch (e) { /* noop */ }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

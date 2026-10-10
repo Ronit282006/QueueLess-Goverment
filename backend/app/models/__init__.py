@@ -19,7 +19,7 @@ from .ops import AuditLog, SystemMetric
 from .prediction import Prediction
 from .token import Token, TokenEvent, TokenSequence
 from .user import User
-from .verification import EmailOTPChallenge
+from .verification import EmailOTPChallenge, StaffOTPChallenge
 
 __all__ = [
     "AuditLog",
@@ -46,6 +46,7 @@ __all__ = [
     "Service",
     "ServiceTimeRecord",
     "StaffAssignment",
+    "StaffOTPChallenge",
     "SystemMetric",
     "Token",
     "TokenEvent",

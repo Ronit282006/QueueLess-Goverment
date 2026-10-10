@@ -5,9 +5,13 @@ import uuid
 
 
 def _staff_headers(client, email: str | None = None) -> dict:
-    """Create (or log in) a STAFF user directly in the DB and return its bearer token."""
+    """Create (or log in) a STAFF user directly in the DB and return its bearer token.
+
+    The member is assigned the first counter of every office so office-scope and
+    counter-level authorization checks pass regardless of which office a test uses.
+    """
     from app.db import SessionLocal
-    from app.models import User
+    from app.models import Counter, StaffAssignment, User
     from app.security import create_access_token, hash_password
 
     email = email or f"staff-{uuid.uuid4().hex[:8]}@example.com"
@@ -20,6 +24,17 @@ def _staff_headers(client, email: str | None = None) -> dict:
             role="STAFF",
         )
         db.add(user)
+        db.flush()
+        first_per_office: dict[int, Counter] = {}
+        for counter in db.query(Counter).order_by(Counter.office_id, Counter.number).all():
+            first_per_office.setdefault(counter.office_id, counter)
+        for counter in first_per_office.values():
+            db.add(
+                StaffAssignment(
+                    user_id=user.id, office_id=counter.office_id,
+                    counter_id=counter.id, is_active=True,
+                )
+            )
         db.commit()
         db.refresh(user)
         token = create_access_token(subject=user.id, role=user.role)
