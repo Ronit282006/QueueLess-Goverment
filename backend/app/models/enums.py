@@ -57,6 +57,32 @@ class NotificationKind(str, enum.Enum):
     ACCOUNT_WELCOME = "ACCOUNT_WELCOME"
     SERVICE_LOCATION_CHANGED = "SERVICE_LOCATION_CHANGED"
     TOKEN_TRANSFER_REQUESTED = "TOKEN_TRANSFER_REQUESTED"
+    ARRIVAL_REMINDER = "ARRIVAL_REMINDER"
+
+
+class GraceState(str, enum.Enum):
+    """Lifecycle of the post-completion no-show grace window for a token."""
+
+    NOT_STARTED = "NOT_STARTED"
+    ACTIVE = "ACTIVE"
+    ARRIVED = "ARRIVED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+
+
+class ReminderStatus(str, enum.Enum):
+    """Status of a durably-scheduled arrival reminder."""
+
+    PENDING = "PENDING"
+    SENT = "SENT"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+
+
+class TravelMode(str, enum.Enum):
+    DRIVING = "driving"
+    WALKING = "walking"
+    CYCLING = "cycling"
 
 
 class NotificationStatus(str, enum.Enum):

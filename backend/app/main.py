@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import admin, analytics, auth, catalog, incidents, queue, staff, staff_management, system, tokens, ws
+from .api import admin, admin_catalog, analytics, arrival, auth, catalog, incidents, queue, staff, staff_management, system, tokens, ws
 from .api.staff_management import counters_router
 from .config import get_settings
 from .db import Base, engine
@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
     )
     install_errors(app)
 
-    for module in (system, auth, catalog, queue, tokens, incidents, staff, admin, analytics, staff_management, ws):
+    for module in (system, auth, catalog, queue, tokens, arrival, incidents, staff, admin, admin_catalog, analytics, staff_management, ws):
         app.include_router(module.router)
     app.include_router(counters_router)
 

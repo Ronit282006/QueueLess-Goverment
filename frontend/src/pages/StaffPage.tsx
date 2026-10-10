@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, PhoneCall, Play, RefreshCw, SkipForward, Users } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { useOffice } from '../lib/office'
 import { statusTone, Badge, Button, Card, NStat, EmptyState, ErrorState, SegmentedControl, DataTable, Page, useToast } from '../components/ui'
-import type { QueueSnapshot, StaffCounter } from '../lib/types'
+import { StaffGraceCountdown } from '../components/ArrivalAssistant'
+import type { CounterGrace, QueueSnapshot, StaffCounter, StaffScope } from '../lib/types'
 
 const availabilityLabels = (t: (k: string, f?: string) => string) => [
   { value: 'AVAILABLE', label: t('staff.open', 'Open') },
@@ -19,8 +20,10 @@ export default function StaffPage() {
   const { t } = useI18n()
   const toast = useToast()
   const [counters, setCounters] = useState<StaffCounter[]>([])
+  const [graceByCounter, setGraceByCounter] = useState<Record<number, CounterGrace>>({})
   const [queue, setQueue] = useState<QueueSnapshot | null>(null)
   const [serviceId, setServiceId] = useState<number | null>(null)
+  const [scopeServices, setScopeServices] = useState<StaffScope['services'] | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -28,7 +31,27 @@ export default function StaffPage() {
   const [, setSeconds] = useState(0)
 
   const officeId = office?.id
-  const officeServices = services.filter((s) => s.officeId === officeId)
+
+  // Only the services this member is assigned to serve. Falls back to the
+  // public catalog while the scope loads, and on error.
+  const officeServices = useMemo(() => {
+    const source =
+      scopeServices === null
+        ? services.map((s) => ({ id: s.id, name: s.name, officeId: s.officeId }))
+        : scopeServices.map((s) => ({ id: s.id, name: s.name, officeId: s.office_id }))
+    return source.filter((s) => s.officeId === officeId)
+  }, [scopeServices, services, officeId])
+
+  useEffect(() => {
+    let active = true
+    api
+      .staffScope()
+      .then((scope) => active && setScopeServices(scope.services ?? []))
+      .catch(() => active && setScopeServices([]))
+    return () => {
+      active = false
+    }
+  }, [])
 
   const load = useCallback(async () => {
     if (!officeId) return
@@ -40,6 +63,16 @@ export default function StaffPage() {
       ])
       setCounters(rows)
       if (snapshot) setQueue(snapshot)
+      if (serviceId && rows.length) {
+        const graceRows = await Promise.all(rows.map((c) => api.counterGrace(c.id, serviceId).catch(() => null)))
+        const map: Record<number, CounterGrace> = {}
+        graceRows.forEach((g) => {
+          if (g) map[g.counter_id] = g
+        })
+        setGraceByCounter(map)
+      } else {
+        setGraceByCounter({})
+      }
       setError('')
       setLastUpdated(Date.now())
     } catch (err) {
@@ -56,8 +89,14 @@ export default function StaffPage() {
   }, [load])
 
   useEffect(() => {
-    if (serviceId === null && officeServices.length) setServiceId(officeServices[0].id)
-  }, [officeServices, serviceId])
+    if (!officeServices.length) {
+      setServiceId(null)
+      return
+    }
+    setServiceId((current) =>
+      current !== null && officeServices.some((s) => s.id === current) ? current : officeServices[0].id,
+    )
+  }, [officeServices])
 
   useEffect(() => {
     const id = setInterval(() => setSeconds((v) => v + 1), 1000)
@@ -176,6 +215,7 @@ export default function StaffPage() {
               { header: 'Status', render: (r) => <Badge tone={statusTone(r.status)}>{t(`status.${r.status}`, r.status)}</Badge> },
               { header: 'Stage', render: (r) => <span className="capitalize text-ink-2">{r.stage.replace(/_/g, ' ')}</span> },
               { header: t('estimatedWait', 'Estimated wait'), align: 'right', render: (r) => <span className="tabular-nums text-ink">{r.eta_min} min</span> },
+              { header: t('staff.grace', 'Grace'), align: 'right', render: (r) => (r.grace_state === 'ACTIVE' ? <StaffGraceCountdown deadline={r.grace_deadline} /> : <span className="text-ink-3">—</span>) },
               { header: '#', align: 'right', render: (r) => <span className="tabular-nums text-ink-3">pos {r.position || '—'}</span> },
             ]}
             rows={queue.tokens}
@@ -232,6 +272,14 @@ export default function StaffPage() {
                       <span className="block text-sm font-medium">{t('staff.emptyToken', 'No active token')}</span>
                     )}
                   </div>
+
+                  {graceByCounter[counter.id]?.grace?.state === 'ACTIVE' && (
+                    <div className="rounded-md border border-warn/40 bg-warn-soft px-3 py-2">
+                      <span className="block text-[10px] font-bold uppercase tracking-[0.12em] text-warn">{t('staff.graceNext', 'Next token grace')}</span>
+                      <StaffGraceCountdown deadline={graceByCounter[counter.id].grace?.deadline} label={graceByCounter[counter.id]?.next_token?.label ?? ''} />
+                      <p className="text-[11px] text-ink-2">{t('staff.graceHint', 'Auto-cancels if not checked in in time.')}</p>
+                    </div>
+                  )}
 
                   {!assigned && serviceId && (
                     <div className="rounded-md border border-warn/40 bg-warn-soft px-3 py-2">

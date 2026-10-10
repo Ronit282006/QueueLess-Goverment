@@ -130,6 +130,8 @@ def snapshot(db: Session, office_id: int, service_id: int, *, with_tokens: bool 
     serving = [t for t in tokens if t.status == TokenStatus.SERVING.value]
     waiting = [t for t in tokens if t.status != TokenStatus.SERVING.value]
 
+    from .grace_service import grace_view
+
     rows = []
     for index, token in enumerate(tokens):
         position = index + 1 if token.status != TokenStatus.SERVING.value else 0
@@ -142,6 +144,7 @@ def snapshot(db: Session, office_id: int, service_id: int, *, with_tokens: bool 
             active_counters=len(counters),
         )
         token.stage = stage_for(token, pred.minutes, position, office.eta_alert_threshold_min if office else 15)
+        grace = grace_view(token)
         rows.append(
             {
                 "id": token.id,
@@ -160,6 +163,10 @@ def snapshot(db: Session, office_id: int, service_id: int, *, with_tokens: bool 
                 "eta_high": round(pred.high),
                 "fairness_score": round(token.fairness_score or 100),
                 "priority": token.priority_rank,
+                "grace_state": grace["state"],
+                "grace_deadline": grace["deadline"],
+                "grace_remaining_sec": grace["remaining_sec"],
+                "arrived": grace["arrived"],
             }
         )
 

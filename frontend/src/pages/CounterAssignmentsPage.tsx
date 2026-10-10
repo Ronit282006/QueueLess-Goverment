@@ -15,7 +15,7 @@ import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { useOffice } from '../lib/office'
-import type { AdminCounter, StaffAssignment, StaffMember } from '../lib/types'
+import type { AdminOfficeCounter, AdminOfficeService, StaffAssignment, StaffMember } from '../lib/types'
 
 export default function CounterAssignmentsPage() {
   const { user } = useAuth()
@@ -25,10 +25,11 @@ export default function CounterAssignmentsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const [members, setMembers] = useState<StaffMember[]>([])
-  const [counters, setCounters] = useState<AdminCounter[]>([])
+  const [services, setServices] = useState<AdminOfficeService[]>([])
+  const [counters, setCounters] = useState<AdminOfficeCounter[]>([])
   const [assignments, setAssignments] = useState<StaffAssignment[]>([])
   const [selectedStaff, setSelectedStaff] = useState<number | null>(() => Number(searchParams.get('staff')) || null)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map())
   const [title, setTitle] = useState('Service Officer')
   const [shiftStart, setShiftStart] = useState('09:30')
   const [shiftEnd, setShiftEnd] = useState('18:00')
@@ -38,13 +39,8 @@ export default function CounterAssignmentsPage() {
 
   const officeId = office?.id
 
-  const officeAssignments = useMemo(() => assignments.filter((a) => a.office_id === officeId), [assignments, officeId])
-  const assignedSet = useMemo(
-    () => new Set(officeAssignments.map((a) => a.counter_id).filter((id): id is number => id !== null)),
-    [officeAssignments],
-  )
-
   const officeName = (id: number) => offices.find((o) => o.id === id)?.name ?? `Office #${id}`
+  const serviceName = (id: number) => services.find((s) => s.id === id)?.name ?? `Service #${id}`
 
   const loadMembers = useCallback(async () => {
     try {
@@ -57,7 +53,12 @@ export default function CounterAssignmentsPage() {
   const loadCounters = useCallback(async () => {
     if (!officeId) return
     try {
-      setCounters(await api.adminCounters(officeId))
+      const [counterRows, serviceRows] = await Promise.all([
+        api.adminOfficeCounters(officeId),
+        api.adminOfficeServices(officeId),
+      ])
+      setCounters(counterRows)
+      setServices(serviceRows)
     } catch (err) {
       toast.error(t('admin.actionFailed', 'That did not work'), (err as Error).message)
     }
@@ -91,7 +92,14 @@ export default function CounterAssignmentsPage() {
       setShiftStart(here?.shift_start || member.assignments[0]?.shift_start || '09:30')
       setShiftEnd(here?.shift_end || member.assignments[0]?.shift_end || '18:00')
     }
-    setSelected(new Set(assignedSet))
+    // Prefill the per-counter service scope from the member's saved assignments.
+    const scope = new Map<number, Set<number>>()
+    for (const a of assignments) {
+      if (a.office_id === officeId && a.counter_id !== null) {
+        scope.set(a.counter_id, new Set(a.service_ids))
+      }
+    }
+    setSelected(scope)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStaff, officeId, members, assignments])
 
@@ -122,11 +130,22 @@ export default function CounterAssignmentsPage() {
     setSearchParams({ staff: String(id), office: office ? String(office.id) : '' })
   }
 
-  const toggle = (counterId: number) => {
+  const toggleCounter = (counterId: number) => {
     setSelected((current) => {
-      const next = new Set(current)
+      const next = new Map(current)
       if (next.has(counterId)) next.delete(counterId)
-      else next.add(counterId)
+      else next.set(counterId, new Set())
+      return next
+    })
+  }
+
+  const toggleService = (counterId: number, serviceId: number) => {
+    setSelected((current) => {
+      const next = new Map(current)
+      const set = new Set(next.get(counterId) ?? [])
+      if (set.has(serviceId)) set.delete(serviceId)
+      else set.add(serviceId)
+      next.set(counterId, set)
       return next
     })
   }
@@ -135,9 +154,14 @@ export default function CounterAssignmentsPage() {
     if (!selectedStaff || !officeId) return
     setBusy(true)
     try {
+      const servicesByCounter: Record<number, number[]> = {}
+      for (const [counterId, set] of selected) {
+        servicesByCounter[counterId] = [...set].sort((a, b) => a - b)
+      }
       await api.adminSetStaffAssignments(selectedStaff, {
         office_id: officeId,
-        counter_ids: [...selected].sort((a, b) => a - b),
+        counter_ids: [...selected.keys()].sort((a, b) => a - b),
+        services_by_counter: servicesByCounter,
         title,
         shift_start: shiftStart,
         shift_end: shiftEnd,
@@ -176,9 +200,7 @@ export default function CounterAssignmentsPage() {
 
   return (
     <Page kicker={`${t('ca.kicker', 'Counter control')} · ${office?.name ?? ''}`} title={t('ca.title', 'Counter assignments')}>
-      <p className="text-sm text-ink-2 mt-0 mb-5 max-w-3xl">
-        {t('ca.hint', 'Pick a staff member, then tick the counters they can operate this shift. Staff only see the counters you assign here.')}
-      </p>
+      <p className="text-sm text-ink-2 mt-0 mb-5 max-w-3xl">{t('ca.hint', 'Pick a staff member, tick the counters they can operate this shift, then choose which services they may handle at each counter.')}</p>
 
       <div className="grid lg:grid-cols-[minmax(280px,360px)_1fr] gap-5 items-start">
         {/* Master: staff list */}
@@ -269,36 +291,91 @@ export default function CounterAssignmentsPage() {
                         {t('ca.selected', '{n} selected').replace('{n}', String(selected.size))}
                       </p>
                       <div className="flex gap-2">
-                        <button type="button" className="text-[13px] font-semibold text-brand hover:underline" onClick={() => setSelected(new Set(counters.map((c) => c.id)))}>
+                        <button type="button" className="text-[13px] font-semibold text-brand hover:underline" onClick={() => setSelected(new Map(counters.map((c) => [c.id, new Set<number>()])))}>
                           {t('ca.selectAll', 'Select all')}
                         </button>
-                        <button type="button" className="text-[13px] font-semibold text-ink-2 hover:underline" onClick={() => setSelected(new Set())}>
+                        <button type="button" className="text-[13px] font-semibold text-ink-2 hover:underline" onClick={() => setSelected(new Map())}>
                           {t('ca.clearAll', 'Clear')}
                         </button>
                       </div>
                     </div>
+                    <p className="text-[12px] text-ink-3 m-0 mb-3">{t('ca.scopeHint', 'For each counter, tick the services this member may serve. Leave all unticked to allow every service the counter handles.')}</p>
                     <ul className="m-0 p-0 list-none grid sm:grid-cols-2 gap-2">
                       {counters.map((counter) => {
                         const checked = selected.has(counter.id)
+                        const scope = selected.get(counter.id)
+                        const offline = counter.status === 'OFFLINE'
+                        const allowedServices = counter.service_ids.length
+                          ? services.filter((s) => counter.service_ids.includes(s.id))
+                          : services
                         return (
-                          <li key={counter.id}>
-                            <label
-                              className={`flex items-center gap-3 rounded-md border px-3.5 py-3 min-h-[60px] cursor-pointer transition-colors ${
-                                checked ? 'border-brand bg-brand-soft' : 'border-line hover:bg-surface2'
-                              }`}
-                            >
-                              <input type="checkbox" checked={checked} onChange={() => toggle(counter.id)} className="w-5 h-5 accent-[color:var(--c-brand)]" />
-                              <span className="min-w-0 flex-1">
-                                <b className="block text-sm text-ink">
-                                  <span className="inline-grid place-items-center min-w-[26px] h-6 px-1.5 rounded bg-surface2 text-[12px] tabular-nums mr-1.5">{counter.number}</span>
-                                  {counter.name}
-                                </b>
-                                <small className="block text-[12px] text-ink-2 truncate mt-0.5">
-                                  {counter.staff.length > 0 ? counter.staff.map((s) => s.full_name).join(', ') : t('ca.noStaffOnCounter', 'No staff assigned')}
-                                </small>
-                              </span>
-                              <Badge tone={counter.status === 'BUSY' ? 'warn' : counter.status === 'AVAILABLE' ? 'ok' : 'alert'}>{counter.status}</Badge>
-                            </label>
+                          <li key={counter.id} className={checked ? 'sm:col-span-2' : ''}>
+                            <div className={`rounded-md border transition-colors ${checked ? 'border-brand bg-brand-soft' : 'border-line'} ${offline ? 'opacity-60' : ''}`}>
+                              <label className={`flex items-center gap-3 px-3.5 py-3 min-h-[60px] ${offline ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={offline}
+                                  onChange={() => toggleCounter(counter.id)}
+                                  className="w-5 h-5 accent-[color:var(--c-brand)]"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <b className="block text-sm text-ink">
+                                    <span className="inline-grid place-items-center min-w-[26px] h-6 px-1.5 rounded bg-surface2 text-[12px] tabular-nums mr-1.5">{counter.number}</span>
+                                    {counter.name}
+                                  </b>
+                                  <small className="block text-[12px] text-ink-2 truncate mt-0.5">
+                                    {counter.staff.length > 0 ? counter.staff.map((s) => s.full_name).join(', ') : t('ca.noStaffOnCounter', 'No staff assigned')}
+                                  </small>
+                                </span>
+                                <Badge tone={offline ? 'alert' : counter.status === 'BUSY' ? 'warn' : counter.status === 'AVAILABLE' ? 'ok' : 'alert'}>
+                                  {offline ? t('ca.offline', 'Offline') : counter.status}
+                                </Badge>
+                              </label>
+                              {checked && (
+                                <div className="px-3.5 pb-3 pt-0 border-t border-brand/20 mt-0">
+                                  <p className="text-[12px] text-ink-2 m-0 my-2">
+                                    {scope && scope.size > 0
+                                      ? t('ca.servicesCount', '{n} service(s)').replace('{n}', String(scope.size))
+                                      : t('ca.servesAll', 'Serves all services')}
+                                  </p>
+                                  {allowedServices.length === 0 ? (
+                                    <p className="text-[12px] text-ink-3 m-0">{t('ca.noServicesOnCounter', 'No services linked to this counter')}</p>
+                                  ) : (
+                                    <>
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-3">{t('ca.allServices', 'All services')}</span>
+                                        <button
+                                          type="button"
+                                          className="text-[12px] font-semibold text-ink-2 hover:underline"
+                                          onClick={() => setSelected((cur) => { const next = new Map(cur); next.set(counter.id, new Set()); return next })}
+                                        >
+                                          {t('ca.clearAll', 'Clear')}
+                                        </button>
+                                      </div>
+                                      <ul className="m-0 p-0 list-none grid sm:grid-cols-2 gap-1.5">
+                                        {allowedServices.map((service) => {
+                                          const serviceChecked = scope?.has(service.id) ?? false
+                                          return (
+                                            <li key={service.id}>
+                                              <label className="flex items-center gap-2.5 rounded border border-line bg-surface px-2.5 py-2 min-h-[40px] cursor-pointer hover:bg-surface2">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={serviceChecked}
+                                                  onChange={() => toggleService(counter.id, service.id)}
+                                                  className="w-4 h-4 accent-[color:var(--c-brand)]"
+                                                />
+                                                <span className="text-[13px] text-ink truncate">{service.name}</span>
+                                              </label>
+                                            </li>
+                                          )
+                                        })}
+                                      </ul>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </li>
                         )
                       })}
@@ -360,6 +437,11 @@ export default function CounterAssignmentsPage() {
                             <li key={`${oid}-${a.counter_id}`} className="rounded-md border border-line px-3.5 py-2.5 flex items-center justify-between gap-3">
                               <span className="text-sm text-ink">
                                 <b>#{a.counter_id ?? '—'}</b> · {a.title} · {a.shift_start}–{a.shift_end}
+                                <span className="block text-[12px] text-ink-2 mt-0.5">
+                                  {a.service_ids.length > 0
+                                    ? a.service_ids.map((id) => serviceName(id)).join(', ')
+                                    : t('ca.servesAll', 'Serves all services')}
+                                </span>
                               </span>
                               <Badge tone="ok">
                                 <CheckCircle2 size={12} aria-hidden /> {t('ca.assigned', 'Assigned')}

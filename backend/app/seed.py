@@ -44,6 +44,8 @@ OFFICES = [
         "code": "gov-main",
         "name": "Central Government Service Center",
         "address": "Sector 11, Gandhinagar, Gujarat",
+        "latitude": 23.2231,
+        "longitude": 72.6500,
         "working_hours": "09:30-18:00",
         "counter_count": 10,
         "departments": [
@@ -127,6 +129,8 @@ OFFICES = [
         "code": "gov-district",
         "name": "District Service Center — Ahmedabad",
         "address": "Navrangpura, Ahmedabad, Gujarat",
+        "latitude": 23.0366,
+        "longitude": 72.5616,
         "working_hours": "10:00-17:30",
         "counter_count": 4,
         "departments": [
@@ -272,6 +276,8 @@ def seed(force: bool = False) -> None:
                 code=spec["code"],
                 name=spec["name"],
                 address=spec["address"],
+                latitude=spec.get("latitude"),
+                longitude=spec.get("longitude"),
                 working_hours=spec["working_hours"],
                 sla_target_wait_min=20 if index == 0 else 25,
                 no_show_grace_min=3,

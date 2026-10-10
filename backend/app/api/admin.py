@@ -302,12 +302,6 @@ def expected_reduction_minutes(db: Session, service_id: int, waiting: int, count
 # ---------------------------------------------------------------------------
 # Catalog management
 # ---------------------------------------------------------------------------
-class OfficeIn(BaseModel):
-    code: str = Field(min_length=2, max_length=40)
-    name: str = Field(min_length=2, max_length=120)
-    address: str = ""
-
-
 class DepartmentIn(BaseModel):
     office_id: int
     name: str = Field(min_length=2, max_length=120)
@@ -328,20 +322,6 @@ class ServicePatch(BaseModel):
     average_service_min: float | None = Field(default=None, gt=0, le=120)
     documents: list[str] | None = None
     is_active: bool | None = None
-
-
-@router.post("/offices", status_code=201)
-def create_office(body: OfficeIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
-    if db.scalar(select(Office).where(Office.code == body.code)):
-        raise ApiException(409, "code_taken", "An office with this code already exists.")
-    office = Office(code=body.code, name=body.name, address=body.address)
-    db.add(office)
-    db.flush()
-    audit_service.record(db, action="catalog.office_created", actor_id=admin.id, actor_role=admin.role,
-                         entity_type="office", entity_id=office.id, detail={"code": body.code})
-    db.commit()
-    catalog_service.invalidate_catalog()
-    return {"id": office.id, "code": office.code, "name": office.name}
 
 
 @router.post("/departments", status_code=201)

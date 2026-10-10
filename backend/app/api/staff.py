@@ -19,6 +19,7 @@ from ..models import (
     Counter,
     CounterService,
     CounterStatus,
+    Department,
     Office,
     Prediction,
     Service,
@@ -30,10 +31,20 @@ from ..models import (
 from ..models.enums import DataOrigin, NotificationKind
 from ..realtime import hub
 from ..security import require_staff
-from ..services import audit_service, notify_service, queue_service, token_service, token_view
+from ..services import (
+    arrival_service,
+    audit_service,
+    grace_service,
+    notify_service,
+    queue_service,
+    token_service,
+    token_view,
+)
 from ..services.assignment_service import (
     assigned_counter_ids,
     assigned_office_ids,
+    assigned_service_ids,
+    assigned_service_scope,
     require_counter_assignment,
     require_office_scope,
 )
@@ -76,13 +87,26 @@ class CallNextRequest(BaseModel):
 
 @router.get("/scope")
 def staff_scope(staff: User = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    """The offices and counters this member may work on, from their assignments.
+    """The offices, counters and services this member may work on.
 
     The frontend uses this to hide everything the member has not been assigned,
     and every counter-level action re-validates against the same table.
     """
     offices = assigned_office_ids(db, staff.id)
     counters = assigned_counter_ids(db, staff.id)
+    service_ids = assigned_service_ids(db, staff.id)
+    services: list[dict] = []
+    if service_ids:
+        rows = db.execute(
+            select(Service.id, Service.name, Department.office_id, Department.name)
+            .join(Department, Service.department_id == Department.id)
+            .where(Service.id.in_(service_ids))
+            .order_by(Service.name)
+        ).all()
+        services = [
+            {"id": row[0], "name": row[1], "office_id": row[2], "department_name": row[3]}
+            for row in rows
+        ]
     return {
         "offices": offices,
         "counters": sorted(counters),
@@ -90,6 +114,7 @@ def staff_scope(staff: User = Depends(require_staff), db: Session = Depends(get_
             str(office_id): sorted(assigned_counter_ids(db, staff.id, office_id))
             for office_id in offices
         },
+        "services": services,
     }
 
 
@@ -107,7 +132,7 @@ def dashboard(office_id: int | None = None, staff: User = Depends(require_staff)
         c for c in db.scalars(select(Counter).where(Counter.office_id == resolved).order_by(Counter.number)).all()
         if c.id in assigned
     ]
-    snapshot["counters"] = [_counter_row(db, c) for c in counters]
+    snapshot["counters"] = [_counter_row(db, c, staff.id) for c in counters]
     return snapshot
 
 
@@ -119,7 +144,7 @@ def list_counters(office_id: int, staff: User = Depends(require_staff), db: Sess
         c for c in db.scalars(select(Counter).where(Counter.office_id == office_id).order_by(Counter.number)).all()
         if c.id in assigned
     ]
-    return [_counter_row(db, c) for c in counters]
+    return [_counter_row(db, c, staff.id) for c in counters]
 
 
 @router.patch("/counters/{counter_id}")
@@ -170,7 +195,7 @@ async def set_counter_status(
     )
     db.commit()
     await hub.broadcast(_room(counter.office_id, 0), {"type": "counters.updated", "office_id": counter.office_id})
-    return _counter_row(db, counter)
+    return _counter_row(db, counter, staff.id)
 
 
 @router.put("/counters/{counter_id}/services")
@@ -201,7 +226,7 @@ def assign_services(
         detail={"service_ids": sorted(valid)},
     )
     db.commit()
-    return _counter_row(db, counter)
+    return _counter_row(db, counter, staff.id)
 
 
 @router.post("/counters/{counter_id}/call-next")
@@ -219,6 +244,12 @@ async def call_next(
         raise ApiException(404, "not_found", "Service not found.")
     if not _counter_serves(db, counter, body.service_id):
         raise ApiException(409, "counter_not_assigned", "This counter is not assigned to that service.")
+    scope = assigned_service_scope(db, staff.id, counter.id)
+    if scope is not None and body.service_id not in scope:
+        raise ApiException(
+            403, "service_not_assigned",
+            "You are not assigned to serve this service at this counter. Please contact your administrator.",
+        )
 
     serving = _active_for_counter(db, counter.id)
     if serving is not None:
@@ -297,6 +328,10 @@ async def complete_service(
     _record_service_time(db, token, counter)
     _score_prediction(db, token)
     counter.status = CounterStatus.AVAILABLE.value
+    arrival_service.cancel_reminders(db, token.id)
+    # The previous token has completed: if the next token in this queue has not
+    # checked in, start its durable no-show grace window.
+    grace_token = grace_service.start_grace_for_next(db, token)
 
     if token.user_id:
         user = db.get(User, token.user_id)
@@ -313,6 +348,13 @@ async def complete_service(
         detail={"label": token.label, "counter_id": counter.id},
     )
     view = token_view.token_detail(db, token)
+    if grace_token is not None:
+        view["next_grace"] = {
+            **grace_service.grace_view(grace_token),
+            "token_label": grace_token.label,
+            "token_reference": grace_token.reference,
+            "token_id": grace_token.id,
+        }
     db.commit()
     ml_model.invalidate(token.service_id)  # new data is available for retraining
     await hub.broadcast(_room(token.office_id, token.service_id), {"type": "queue.updated", "service_id": token.service_id, "office_id": token.office_id})
@@ -337,6 +379,7 @@ async def skip_token(
         actor_id=staff.id, actor_role=staff.role,
     )
     counter.status = CounterStatus.AVAILABLE.value
+    arrival_service.cancel_reminders(db, token.id)
     if token.user_id:
         user = db.get(User, token.user_id)
         notify_service.enqueue(
@@ -363,10 +406,48 @@ def staff_queue(
     return queue_service.snapshot(db, office_id, service_id)
 
 
+@router.get("/counters/{counter_id}/grace")
+def counter_grace(
+    counter_id: int,
+    service_id: int | None = Query(default=None),
+    staff: User = Depends(require_staff),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Live no-show grace status for the counter's next token (countdown UI)."""
+    counter = get_counter(db, counter_id)
+    require_counter_assignment(db, staff, counter)
+    resolved_service = service_id
+    if resolved_service is None:
+        resolved_service = db.scalar(
+            select(CounterService.service_id).where(CounterService.counter_id == counter.id)
+        )
+    if resolved_service is None:
+        return {"counter_id": counter.id, "service_id": None, "grace": None, "next_token": None}
+
+    candidate = grace_service.next_eligible(db, counter.office_id, resolved_service)
+    previous = db.scalar(
+        select(Token)
+        .where(
+            Token.counter_id == counter.id,
+            Token.status == TokenStatus.COMPLETED.value,
+        )
+        .order_by(Token.completed_at.desc())
+    )
+    view = token_view.token_detail(db, candidate, include_qr=False) if candidate else None
+    return {
+        "counter_id": counter.id,
+        "office_id": counter.office_id,
+        "service_id": resolved_service,
+        "previous_token": previous.label if previous else None,
+        "next_token": view,
+        "grace": grace_service.grace_view(candidate) if candidate else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _counter_row(db: Session, counter: Counter) -> dict:
+def _counter_row(db: Session, counter: Counter, staff_id: int | None = None) -> dict:
     current = db.scalar(
         select(Token)
         .where(
@@ -378,6 +459,10 @@ def _counter_row(db: Session, counter: Counter) -> dict:
     service_ids = list(
         db.scalars(select(CounterService.service_id).where(CounterService.counter_id == counter.id))
     )
+    if staff_id is not None:
+        scope = assigned_service_scope(db, staff_id, counter.id)
+        if scope is not None:
+            service_ids = [sid for sid in service_ids if sid in scope]
     return {
         "id": counter.id,
         "number": counter.number,

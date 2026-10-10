@@ -16,7 +16,7 @@ from ..errors import ApiException
 from ..models import Office, OfficeHoliday, OfficeIncident, Service, Token, User
 from ..models.enums import NotificationKind, TokenStatus
 from ..security import get_optional_user, require_admin, require_staff
-from ..services import audit_service, notify_service, queue_service, token_service, token_view
+from ..services import audit_service, catalog_service, notify_service, queue_service, token_service, token_view
 from ..services.assignment_service import require_office_scope
 
 router = APIRouter(prefix="/api", tags=["Incidents"])
@@ -52,6 +52,9 @@ class HolidayCreate(BaseModel):
 class OfficeLocationUpdate(BaseModel):
     address: str = Field(min_length=3, max_length=255)
     location_instructions: str = Field(default="", max_length=300)
+    # Optional geo pin so travel estimates work for this office.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
 _DAY_NAMES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -448,6 +451,11 @@ def update_office_location(
         raise ApiException(404, "office_not_found", "Office not found.")
     office.address = body.address
     office.location_instructions = body.location_instructions
+    if body.latitude is not None:
+        office.latitude = body.latitude
+    if body.longitude is not None:
+        office.longitude = body.longitude
+    catalog_service.invalidate_catalog()
     db.flush()
     active = db.scalars(select(Token).where(
         Token.office_id == office.id,
@@ -469,4 +477,10 @@ def update_office_location(
                          entity_type="office", entity_id=office.id, office_id=office.id,
                          detail={"address": office.address})
     db.commit()
-    return {"office_id": office.id, "address": office.address, "location_instructions": office.location_instructions}
+    return {
+        "office_id": office.id,
+        "address": office.address,
+        "location_instructions": office.location_instructions,
+        "latitude": office.latitude,
+        "longitude": office.longitude,
+    }

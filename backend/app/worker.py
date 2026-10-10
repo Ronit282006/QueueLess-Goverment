@@ -23,8 +23,16 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import SessionLocal
 from .models import Notification, NotificationLog, Office, Token, TokenStatus, User
-from .models.enums import NotificationKind, NotificationStatus, TokenStage
-from .services import audit_service, prediction_service, queue_service, token_service
+from .models.enums import GraceState, NotificationKind, NotificationStatus, TokenStage
+from .services import (
+    arrival_service,
+    audit_service,
+    grace_service,
+    prediction_service,
+    queue_service,
+    token_service,
+    token_view,
+)
 from .services.cache_service import get_redis, publish
 from .services.email_templates import render_email_html
 from .services.notify_service import EMAIL_QUEUE_KEY, enqueue
@@ -67,6 +75,14 @@ def publish_queue_update(office_id: int, service_id: int) -> None:
         f"{CHANNEL_PREFIX}:queue:{office_id}:{service_id}",
         json.dumps({"type": "queue.updated", "service_id": service_id, "office_id": office_id}),
     )
+
+
+def publish_token_update(reference: str, view: dict | None = None) -> None:
+    """Broadcast a single-token change (e.g. auto-cancellation) to its room."""
+    payload: dict = {"type": "token.updated", "reference": reference}
+    if view is not None:
+        payload["token"] = view
+    publish(f"{CHANNEL_PREFIX}:token:{reference}", json.dumps(payload, default=str))
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +315,10 @@ def sweep_no_shows(db: Session) -> int:
     )
     expired = 0
     for token in called:
+        # A token inside the post-completion grace window is owned by
+        # grace_service; do not double-handle it here.
+        if token.grace_state == GraceState.ACTIVE.value:
+            continue
         office = db.get(Office, token.office_id)
         grace = office.no_show_grace_min if office else get_settings().no_show_grace_min
         called_at = token.called_at
@@ -485,16 +505,43 @@ def sweep_incident_deadlines(db: Session) -> dict[str, int]:
     return {"cancelled": cancelled, "staff_review": staff_review}
 
 
+def sweep_grace_periods(db: Session) -> int:
+    """Cancel tokens whose post-completion no-show grace window has elapsed."""
+    cancelled = grace_service.expire_due_grace(db)
+    for item in cancelled:
+        token = db.get(Token, item["id"])
+        view = token_view.token_detail(db, token, include_qr=False) if token else None
+        publish_queue_update(item["office_id"], item["service_id"])
+        publish_token_update(item["reference"], view)
+    return len(cancelled)
+
+
+def process_arrival_reminders(db: Session) -> int:
+    """Deliver any "time to leave" reminders whose departure time has arrived."""
+    return arrival_service.process_due_reminders(db)
+
+
 def run_sweep_once() -> dict:
     db = SessionLocal()
     try:
         expired = sweep_no_shows(db)
+        grace_cancelled = sweep_grace_periods(db)
+        reminders_sent = process_arrival_reminders(db)
         changed = refresh_active_stages(db)
         incidents = sweep_incident_deadlines(db)
         db.commit()
-        if expired or changed:
-            logger.info("sweeper: expired=%s stages_changed=%s", expired, changed)
-        return {"expired": expired, "stages_changed": changed, **incidents}
+        if expired or changed or grace_cancelled or reminders_sent:
+            logger.info(
+                "sweeper: expired=%s grace_cancelled=%s reminders=%s stages_changed=%s",
+                expired, grace_cancelled, reminders_sent, changed,
+            )
+        return {
+            "expired": expired,
+            "grace_cancelled": grace_cancelled,
+            "reminders_sent": reminders_sent,
+            "stages_changed": changed,
+            **incidents,
+        }
     finally:
         db.close()
 

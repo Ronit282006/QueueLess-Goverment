@@ -12,7 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import ApiException
-from ..models import Counter, StaffAssignment, User
+from ..models import (
+    Counter,
+    CounterService,
+    Department,
+    Service,
+    StaffAssignment,
+    StaffAssignmentService,
+    User,
+)
 
 
 def assigned_office_ids(db: Session, user_id: int) -> list[int]:
@@ -85,3 +93,75 @@ def counter_serves(counter: Counter, service_id: int, handled: set[int] | None =
     if counter.id in handled:
         return True
     return False
+
+
+def assigned_service_ids(db: Session, user_id: int, office_id: int | None = None) -> set[int]:
+    """Every service the member may serve across their active assignments.
+
+    Mirrors the per-counter rule used for enforcement: an assignment's explicit
+    scope wins, otherwise the services its counter is linked to, otherwise (an
+    unmapped counter) every service offered by the assignment's office.
+    """
+    stmt = select(StaffAssignment).where(
+        StaffAssignment.user_id == user_id, StaffAssignment.is_active.is_(True)
+    )
+    if office_id is not None:
+        stmt = stmt.where(StaffAssignment.office_id == office_id)
+
+    allowed: set[int] = set()
+    for assignment in db.scalars(stmt).all():
+        if assignment.counter_id is None:
+            continue
+        explicit = {s.service_id for s in assignment.services}
+        if explicit:
+            allowed |= explicit
+            continue
+        links = set(
+            db.scalars(
+                select(CounterService.service_id).where(
+                    CounterService.counter_id == assignment.counter_id
+                )
+            ).all()
+        )
+        if links:
+            allowed |= links
+            continue
+        office_services = set(
+            db.scalars(
+                select(Service.id)
+                .join(Department, Service.department_id == Department.id)
+                .where(Department.office_id == assignment.office_id)
+            ).all()
+        )
+        allowed |= office_services
+    return allowed
+
+
+def assigned_service_scope(db: Session, user_id: int, counter_id: int) -> set[int] | None:
+    """Services a member may serve at a counter.
+
+    Returns ``None`` when the assignment is unrestricted (no explicit scope
+    rows), meaning every service the counter handles is allowed. Otherwise
+    returns the explicit set of permitted service ids (possibly empty, which
+    should be treated as "no services").
+    """
+    explicit: set[int] = set()
+    has_scope = False
+    rows = db.execute(
+        select(StaffAssignment.id, StaffAssignmentService.service_id)
+        .outerjoin(
+            StaffAssignmentService,
+            StaffAssignmentService.assignment_id == StaffAssignment.id,
+        )
+        .where(
+            StaffAssignment.user_id == user_id,
+            StaffAssignment.counter_id == counter_id,
+            StaffAssignment.is_active.is_(True),
+        )
+    ).all()
+    for _assignment_id, service_id in rows:
+        if service_id is None:
+            continue
+        has_scope = True
+        explicit.add(service_id)
+    return explicit if has_scope else None

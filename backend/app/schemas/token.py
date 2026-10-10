@@ -12,6 +12,11 @@ class TokenCreateRequest(BaseModel):
     office_id: int | None = None
     service_id: int
     documents_confirmed: list[str] = Field(default_factory=list)
+    # Optional citizen location so we can capture a travel estimate and schedule
+    # a "time to leave" reminder. Coordinates are never shared with staff.
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    travel_mode: str | None = None
 
 
 class TokenEventOut(BaseModel):

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Accessibility, Activity, BarChart3, ChevronDown, Home, LogIn, LogOut,
+  Accessibility, Activity, BarChart3, Building2, ChevronDown, Home, LogIn, LogOut,
   Menu, Moon, Settings, ShieldCheck, SlidersHorizontal, Sun, Ticket,
   UserCog, Users, Languages, X,
 } from 'lucide-react'
@@ -18,6 +18,7 @@ const CRUMBS: Record<string, string> = {
   '/': 'Overview',
   '/staff': 'Staff console',
   '/admin': 'Administration',
+  '/admin/offices': 'Office management',
   '/admin/staff': 'Staff management',
   '/admin/assignments': 'Counter assignments',
   '/analytics': 'Analytics',
@@ -87,6 +88,7 @@ export default function Layout() {
     if (canAdmin) {
       items.push(
         { to: '/admin', label: t('nav.admin', 'Administration'), icon: <Settings size={18} /> },
+        { to: '/admin/offices', label: t('nav.offices', 'Offices'), icon: <Building2 size={18} /> },
         { to: '/admin/staff', label: t('nav.staffManage', 'Staff management'), icon: <UserCog size={18} /> },
         { to: '/admin/assignments', label: t('nav.assignments', 'Counter assignments'), icon: <SlidersHorizontal size={18} /> },
         { to: '/analytics', label: t('nav.analytics', 'Analytics'), icon: <BarChart3 size={18} /> },
@@ -301,7 +303,12 @@ export default function Layout() {
     </Popover>
   )
 
-  const crumb = CRUMBS[location.pathname] ?? (location.pathname.startsWith('/admin') ? CRUMBS['/admin'] : t('appName', 'QueueLess'))
+  const crumb =
+    CRUMBS[location.pathname] ??
+    Object.entries(CRUMBS)
+      .filter(([path]) => path !== '/' && location.pathname.startsWith(`${path}/`))
+      .sort((a, b) => b[0].length - a[0].length)[0]?.[1] ??
+    (location.pathname.startsWith('/admin') ? CRUMBS['/admin'] : t('appName', 'QueueLess'))
 
   const handleLogoutMobile = () => {
     logout()

@@ -52,6 +52,8 @@ def token_detail(db: Session, token: Token, *, include_qr: bool = True) -> dict:
         if base is not None:
             expected_at = base + timedelta(minutes=pred.minutes)
 
+    from .grace_service import grace_view
+
     return {
         "id": token.id,
         "reference": token.reference,
@@ -86,6 +88,13 @@ def token_detail(db: Session, token: Token, *, include_qr: bool = True) -> dict:
         "incident_response_status": token.incident_response_status,
         "qr_data_url": qr_service.qr_data_url(token.reference) if include_qr else None,
         "prediction": pred.as_dict(),
+        "grace": grace_view(token),
+        "cancellation_reason": token.cancellation_reason,
+        "cancelled_at": token.cancelled_at.isoformat() if token.cancelled_at else None,
+        "travel_min": token.travel_min,
+        "travel_distance_km": token.travel_distance_km,
+        "travel_mode": token.travel_mode,
+        "travel_provider": token.travel_provider,
     }
 
 

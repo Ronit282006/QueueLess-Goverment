@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,12 +23,16 @@ from ..db import get_db
 from ..errors import ApiException
 from ..models import (
     Counter,
+    CounterService,
+    Department,
     Office,
+    Service,
     StaffAssignment,
+    StaffAssignmentService,
     StaffOTPChallenge,
     User,
 )
-from ..models.enums import NotificationKind, Role
+from ..models.enums import CounterStatus, NotificationKind, Role
 from ..security import hash_password, require_admin
 from ..services import audit_service, notify_service
 from ..services.email_validation import ensure_deliverable_email
@@ -128,9 +132,22 @@ class StaffCreatedOut(BaseModel):
 class CounterAssignmentIn(BaseModel):
     office_id: int
     counter_ids: list[int] = Field(default_factory=list)
+    # Optional per-counter service scope. A counter mapped to an empty list (or
+    # omitted) is unrestricted: the member may serve every service it handles.
+    services_by_counter: dict[int, list[int]] = Field(default_factory=dict)
     title: str = Field(default="Service Officer", max_length=80)
     shift_start: str = Field(default="09:30", max_length=10)
     shift_end: str = Field(default="18:00", max_length=10)
+
+
+class StaffUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    email: EmailStr | None = None
+    is_active: bool | None = None
+
+
+class StaffStatusIn(BaseModel):
+    is_active: bool
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +317,24 @@ def create_staff(body: StaffCreateRequest, admin: User = Depends(require_admin),
 
 
 @router.get("")
-def list_staff(admin: User = Depends(require_admin), db: Session = Depends(get_db)) -> list[dict]:
-    users = db.scalars(
-        select(User).where(User.role == Role.STAFF.value).order_by(User.created_at, User.id)
-    ).all()
+def list_staff(
+    search: str | None = Query(None, max_length=120),
+    status: str | None = Query(None, pattern="^(active|inactive)$"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    stmt = select(User).where(User.role == Role.STAFF.value)
+    if status == "active":
+        stmt = stmt.where(User.is_active.is_(True))
+    elif status == "inactive":
+        stmt = stmt.where(User.is_active.is_(False))
+    if search:
+        term = f"%{search.strip().lower()}%"
+        stmt = stmt.where(or_(
+            func.lower(User.full_name).like(term),
+            func.lower(User.email).like(term),
+        ))
+    users = db.scalars(stmt.order_by(User.created_at, User.id)).all()
     return [_staff_member_row(db, u) for u in users]
 
 
@@ -312,6 +343,52 @@ def staff_detail(user_id: int, admin: User = Depends(require_admin), db: Session
     user = db.get(User, user_id)
     if user is None or user.role != Role.STAFF.value:
         raise ApiException(404, "not_found", "Staff member not found.")
+    return _staff_member_row(db, user)
+
+
+@router.patch("/{user_id}")
+def update_staff(
+    user_id: int, body: StaffUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None or user.role != Role.STAFF.value:
+        raise ApiException(404, "not_found", "Staff member not found.")
+    data = body.model_dump(exclude_unset=True)
+    changed: list[str] = []
+    if "full_name" in data and data["full_name"] is not None:
+        user.full_name = data["full_name"].strip()
+        changed.append("full_name")
+    if "email" in data and data["email"] is not None:
+        email = ensure_deliverable_email(data["email"])
+        if email != user.email:
+            if db.scalar(select(User.id).where(User.email == email, User.id != user.id)) is not None:
+                raise ApiException(409, "email_taken", "An account with this email already exists.")
+            user.email = email
+            changed.append("email")
+    if "is_active" in data and data["is_active"] is not None:
+        user.is_active = data["is_active"]
+        changed.append("is_active")
+    audit_service.record(
+        db, action="staff.updated", actor_id=admin.id, actor_role=admin.role,
+        entity_type="user", entity_id=user.id, detail={"fields": changed},
+    )
+    db.commit()
+    return _staff_member_row(db, user)
+
+
+@router.post("/{user_id}/status")
+def set_staff_status(
+    user_id: int, body: StaffStatusIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None or user.role != Role.STAFF.value:
+        raise ApiException(404, "not_found", "Staff member not found.")
+    user.is_active = body.is_active
+    audit_service.record(
+        db, action="staff.activated" if body.is_active else "staff.deactivated",
+        actor_id=admin.id, actor_role=admin.role, entity_type="user", entity_id=user.id,
+    )
+    db.commit()
     return _staff_member_row(db, user)
 
 
@@ -341,18 +418,65 @@ def set_staff_assignments(
     user = db.get(User, user_id)
     if user is None or user.role != Role.STAFF.value:
         raise ApiException(404, "not_found", "Staff member not found.")
+    if not user.is_active:
+        raise ApiException(409, "staff_inactive", "Cannot assign counters to an inactive staff member.")
     office = db.get(Office, body.office_id)
     if office is None:
         raise ApiException(404, "office_not_found", "Office not found.")
+    if not office.is_active:
+        raise ApiException(409, "office_inactive", "Cannot assign counters in an inactive office.")
     requested = set(dict.fromkeys(body.counter_ids))
+    # A service scope may also imply a counter, so include those keys too.
+    for counter_id in body.services_by_counter:
+        requested.add(counter_id)
     if requested:
         counters = db.scalars(select(Counter).where(Counter.id.in_(requested))).all()
         by_id = {c.id: c for c in counters}
         if len(by_id) != len(requested):
             raise ApiException(400, "invalid_counter", "One or more counters do not exist.")
         for counter_id in requested:
-            if by_id[counter_id].office_id != office.id:
+            counter = by_id[counter_id]
+            if counter.office_id != office.id:
                 raise ApiException(400, "cross_office_assignment", "Every counter must belong to the selected office.")
+            if counter.status == CounterStatus.OFFLINE.value:
+                raise ApiException(409, "counter_inactive", "Cannot assign an inactive counter.")
+
+    # Normalise the requested service scope per counter.
+    scope_by_counter: dict[int, list[int]] = {
+        counter_id: list(dict.fromkeys(body.services_by_counter.get(counter_id) or []))
+        for counter_id in requested
+    }
+
+    # Every explicitly scoped service must actually be serviceable at that
+    # counter: it must be linked to the counter, or (for counters with no links)
+    # offered by the office.
+    if any(scope_by_counter.values()):
+        link_rows = db.execute(
+            select(CounterService.counter_id, CounterService.service_id).where(
+                CounterService.counter_id.in_(requested)
+            )
+        ).all()
+        links_by_counter: dict[int, set[int]] = {}
+        for counter_id, service_id in link_rows:
+            links_by_counter.setdefault(counter_id, set()).add(service_id)
+        office_service_ids = set(
+            db.scalars(
+                select(Service.id)
+                .join(Department, Service.department_id == Department.id)
+                .where(Department.office_id == office.id)
+            ).all()
+        )
+        for counter_id, service_ids in scope_by_counter.items():
+            if not service_ids:
+                continue
+            allowed = links_by_counter.get(counter_id) or office_service_ids
+            unknown = [sid for sid in service_ids if sid not in allowed]
+            if unknown:
+                raise ApiException(
+                    422, "service_not_served_by_counter",
+                    "One or more selected services are not served by this counter.",
+                    {"counter_id": counter_id, "service_ids": unknown},
+                )
 
     existing = list(
         db.scalars(
@@ -370,12 +494,14 @@ def set_staff_assignments(
         if assignment.counter_id is not None and assignment.counter_id not in requested:
             db.delete(assignment)
     for counter_id in requested:
+        scope = scope_by_counter.get(counter_id, [])
         assignment = existing_by_counter.get(counter_id)
         if assignment is not None:
             assignment.title = body.title
             assignment.shift_start = body.shift_start
             assignment.shift_end = body.shift_end
             assignment.is_active = True
+            assignment.services = [StaffAssignmentService(service_id=sid) for sid in scope]
         else:
             db.add(
                 StaffAssignment(
@@ -386,6 +512,7 @@ def set_staff_assignments(
                     shift_start=body.shift_start,
                     shift_end=body.shift_end,
                     is_active=True,
+                    services=[StaffAssignmentService(service_id=sid) for sid in scope],
                 )
             )
     audit_service.record(
@@ -395,6 +522,7 @@ def set_staff_assignments(
             "office_id": office.id,
             "before": sorted(before),
             "after": sorted(requested),
+            "service_scope": {str(k): sorted(v) for k, v in scope_by_counter.items()},
             "title": body.title,
             "shift_start": body.shift_start,
             "shift_end": body.shift_end,
@@ -449,6 +577,7 @@ def _assignment_row(a: StaffAssignment) -> dict:
     return {
         "office_id": a.office_id,
         "counter_id": a.counter_id,
+        "service_ids": sorted(s.service_id for s in a.services),
         "title": a.title,
         "shift_start": a.shift_start,
         "shift_end": a.shift_end,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Building2, CalendarPlus, MapPin, Save, Trash2 } from 'lucide-react'
+import { Building2, CalendarPlus, Crosshair, MapPin, Save, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, EmptyState, FormField, useToast } from '../../components/ui'
 import { api } from '../../lib/api'
 import { useI18n } from '../../lib/i18n'
@@ -17,6 +17,9 @@ export default function OfficeOperations({ holidays, reload }: { holidays: Json[
   const [responseMinutes, setResponseMinutes] = useState(30)
   const [address, setAddress] = useState('')
   const [instructions, setInstructions] = useState('')
+  const [latitude, setLatitude] = useState('')
+  const [longitude, setLongitude] = useState('')
+  const [locating, setLocating] = useState(false)
   const [holidayDate, setHolidayDate] = useState('')
   const [holidayName, setHolidayName] = useState('Public holiday')
   const [busy, setBusy] = useState('')
@@ -31,6 +34,8 @@ export default function OfficeOperations({ holidays, reload }: { holidays: Json[
     setResponseMinutes(office.incident_response_min ?? 30)
     setAddress(office.address)
     setInstructions(office.location_instructions ?? '')
+    setLatitude(office.latitude != null ? String(office.latitude) : '')
+    setLongitude(office.longitude != null ? String(office.longitude) : '')
   }, [office?.id])
 
   const guard = async (key: string, fn: () => Promise<void>, ok: string) => {
@@ -58,10 +63,40 @@ export default function OfficeOperations({ holidays, reload }: { holidays: Json[
       })
     }, t('admin.scheduleSaved', 'Office hours and response policy saved.'))
 
+  const parseCoord = (value: string): number | null => {
+    const trimmed = value.trim()
+    if (trimmed === '') return null
+    const num = Number(trimmed)
+    return Number.isFinite(num) ? num : null
+  }
+
+  const useCurrentLocation = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      toast.error(t('admin.actionFailed', 'That did not work'), t('admin.noGeolocation', 'Location is not supported on this device.'))
+      return
+    }
+    setLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLatitude(position.coords.latitude.toFixed(6))
+        setLongitude(position.coords.longitude.toFixed(6))
+        setLocating(false)
+      },
+      () => {
+        setLocating(false)
+        toast.error(t('admin.actionFailed', 'That did not work'), t('admin.locationDenied', 'Could not read your location.'))
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    )
+  }
+
   const saveLocation = () =>
     guard('location', async () => {
       if (!officeId) return
-      await api.updateOfficeLocation(officeId, address, instructions)
+      await api.updateOfficeLocation(officeId, address, instructions, {
+        latitude: parseCoord(latitude),
+        longitude: parseCoord(longitude),
+      })
     }, t('admin.locationSaved', 'Office location updated. Active citizens were notified.'))
 
   const addHoliday = () =>
@@ -146,6 +181,38 @@ export default function OfficeOperations({ holidays, reload }: { holidays: Json[
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInstructions(e.target.value)}
               hint={t('admin.instructionsHint', 'Plain-language directions, e.g. “Second floor, counter 4”.')}
             />
+            <div className="grid sm:grid-cols-2 gap-4">
+              <FormField
+                id="office-latitude"
+                label={t('admin.latitude', 'Latitude')}
+                type="number"
+                step="any"
+                min={-90}
+                max={90}
+                value={latitude}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLatitude(e.target.value)}
+                placeholder="e.g. 22.2904"
+              />
+              <FormField
+                id="office-longitude"
+                label={t('admin.longitude', 'Longitude')}
+                type="number"
+                step="any"
+                min={-180}
+                max={180}
+                value={longitude}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLongitude(e.target.value)}
+                placeholder="e.g. 70.7932"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="ghost" size="sm" onClick={useCurrentLocation} loading={locating} icon={<Crosshair size={15} />}>
+                {t('admin.useMyLocation', 'Use my current location')}
+              </Button>
+              <span className="text-[12px] text-ink-3">
+                {t('admin.coordinatesHint', 'Pin the office so travel times are accurate. Leave blank if you do not know the coordinates.')}
+              </span>
+            </div>
             <Button variant="secondary" onClick={() => void saveLocation()} loading={busy === 'location'} icon={<MapPin size={16} />}>
               {t('admin.saveLocation', 'Update location and notify active citizens')}
             </Button>

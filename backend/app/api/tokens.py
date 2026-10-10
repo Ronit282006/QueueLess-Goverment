@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
@@ -14,7 +15,16 @@ from ..models import Feedback, Office, Prediction, PriorityRule, Service, Token,
 from ..models.enums import NotificationKind, TokenStatus
 from ..realtime import hub
 from ..security import get_optional_user
-from ..services import audit_service, catalog_service, notify_service, qr_service, token_service, token_view
+from ..services import (
+    arrival_service,
+    audit_service,
+    catalog_service,
+    notify_service,
+    qr_service,
+    routing_service,
+    token_service,
+    token_view,
+)
 from ..services.rate_limit import rate_limit
 from ..schemas.token import CheckInRequest, FeedbackRequest, TokenCreateRequest, TransitionRequest
 
@@ -47,10 +57,15 @@ def priority_for(db: Session, office_id: int, user: User | None) -> int:
 
 
 def _resolve_office(db: Session, service_id: int, requested: int | None) -> int:
-    office = catalog_service.office_for_service(db, service_id)
-    if office is None:
+    service_office = catalog_service.office_for_service(db, service_id)
+    if service_office is None:
         raise ApiException(404, "not_found", "Service not found.")
-    return requested or office.id
+    office = service_office if requested is None else db.get(Office, requested)
+    if office is None:
+        raise ApiException(404, "not_found", "Office not found.")
+    if not office.is_active:
+        raise ApiException(409, "office_inactive", "This office is not currently accepting new bookings.")
+    return office.id
 
 
 @router.post("", status_code=201, dependencies=[Depends(rate_limit("token_create", 30))])
@@ -74,6 +89,22 @@ async def create_token(
         user_id=current.id if current else None,
         priority_rank=boost,
     )
+    # If the citizen shared a location, capture a travel estimate and schedule a
+    # durable "time to leave" reminder. Coordinates themselves are not stored.
+    if routing_service.valid_coords(body.latitude, body.longitude):
+        office = db.get(Office, office_id)
+        if office is not None and routing_service.valid_coords(office.latitude, office.longitude):
+            origin = (float(body.latitude), float(body.longitude))
+            route = routing_service.estimate_route(
+                origin, (office.latitude, office.longitude), mode=body.travel_mode
+            )
+            if route.available:
+                token.travel_min = route.duration_min
+                token.travel_distance_km = route.distance_km
+                token.travel_mode = route.mode
+                token.travel_provider = route.provider
+                token.travel_calculated_at = datetime.now(timezone.utc)
+            arrival_service.schedule_departure_reminder(db, token, origin, mode=body.travel_mode)
     view = token_view.token_detail(db, token)
     if current is not None:
         office = db.get(Office, office_id)
@@ -155,6 +186,8 @@ async def check_in(
             actor_id=actor.id if actor else None,
             actor_role=actor.role if actor else "CITIZEN",
         )
+    # Arrived: the "time to leave" reminder is no longer relevant.
+    arrival_service.cancel_reminders(db, token.id)
 
     audit_service.record(
         db,
@@ -234,6 +267,14 @@ async def transition(
         actor_id=actor.id if actor else None,
         actor_role=actor.role if actor else "CITIZEN",
     )
+    if new_status in (
+        TokenStatus.CANCELLED,
+        TokenStatus.COMPLETED,
+        TokenStatus.EXPIRED,
+        TokenStatus.ARRIVED,
+        TokenStatus.RESCHEDULED,
+    ):
+        arrival_service.cancel_reminders(db, token.id)
     if new_status == TokenStatus.CANCELLED and token.user_id:
         user = db.get(User, token.user_id)
         notify_service.enqueue(

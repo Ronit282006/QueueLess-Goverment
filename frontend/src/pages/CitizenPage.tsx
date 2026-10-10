@@ -8,11 +8,13 @@ import { api } from '../lib/api'
 import { useI18n } from '../lib/i18n'
 import { useOffice } from '../lib/office'
 import { useAuth } from '../lib/auth'
+import { useLocation } from '../lib/location'
 import { useQueue, useToken } from '../lib/hooks'
 import {
   Badge, statusTone, Button, Card, NStat, EmptyState, SkeletonCard, Modal, ProgressRing,
   Meter, useToast,
 } from '../components/ui'
+import { LocationOnboarding, OfficeRecommendations, DepartureGuidancePanel, GraceStatusBanner } from '../components/ArrivalAssistant'
 import type { Token } from '../lib/types'
 
 const SAVED_TOKENS_KEY = 'ql_citizen_tokens_by_owner'
@@ -34,8 +36,10 @@ export default function CitizenPage() {
   const { t } = useI18n()
   const { user } = useAuth()
   const { services, office, loading } = useOffice()
+  const { coords, mode } = useLocation()
   const toast = useToast()
   const [serviceId, setServiceId] = useState<number | null>(null)
+  const [chosenOffice, setChosenOffice] = useState<{ officeId: number; serviceId: number; officeName: string } | null>(null)
   const [query, setQuery] = useState('')
   const [modal, setModal] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -66,6 +70,10 @@ export default function CitizenPage() {
   useEffect(() => {
     if (serviceId === null && services.length) setServiceId(services[0].id)
   }, [services, serviceId])
+
+  useEffect(() => {
+    setChosenOffice(null)
+  }, [serviceId])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -100,7 +108,12 @@ export default function CitizenPage() {
     setBusy(true)
     setError('')
     try {
-      const created = await api.createToken(serviceId, office?.id, selected?.documents ?? [])
+      const created = await api.createToken(
+        chosenOffice?.serviceId ?? serviceId,
+        chosenOffice?.officeId ?? office?.id,
+        selected?.documents ?? [],
+        coords ? { ...coords, travel_mode: mode } : null,
+      )
       selectToken(created.reference)
       setReferencesByOwner((current) => ({
         ...current,
@@ -219,6 +232,8 @@ export default function CitizenPage() {
         </div>
       </section>
 
+      <LocationOnboarding />
+
       {/* Stats */}
       <section aria-label={t('staff.overview', 'Live overview')} className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <NStat label={t('citizen.peopleWaiting', 'People waiting')} valueNumber={queue?.waiting ?? 0} hint={selected ? selected.name : undefined} delay={0} />
@@ -310,12 +325,21 @@ export default function CitizenPage() {
         )}
       </div>
 
+      <OfficeRecommendations
+        serviceId={serviceId}
+        selectedOfficeId={chosenOffice?.officeId ?? null}
+        onSelect={(officeId, svcId, officeName) =>
+          officeId === null ? setChosenOffice(null) : setChosenOffice({ officeId, serviceId: svcId, officeName })
+        }
+      />
+
       <div className="grid lg:grid-cols-2 gap-4 mb-6 items-start">
         {/* Selected service detail */}
         <Card kicker="SERVICE" title={selected?.name ?? t('citizen.chooseService', 'Choose a service')} action={<Badge tone="ok">{horizon?.method ?? 'live estimate'}</Badge>}>
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
             <span className="inline-flex items-center gap-1.5 text-sm text-ink-2">
-              <MapPin size={15} aria-hidden /> {selected?.officeName ?? office?.name}
+              <MapPin size={15} aria-hidden /> {chosenOffice?.officeName ?? selected?.officeName ?? office?.name}
+              {chosenOffice && <Badge tone="ok">{t('arrival.selected', 'Selected')}</Badge>}
             </span>
           </div>
 
@@ -444,7 +468,7 @@ export default function CitizenPage() {
         open={modal && !!selected}
         onClose={() => setModal(false)}
         title={t('citizen.confirmToken', 'Confirm your token')}
-        description={selected ? `${selected.name} · ${selected.officeName ?? office?.name}` : undefined}
+        description={selected ? `${selected.name} · ${chosenOffice?.officeName ?? selected.officeName ?? office?.name}` : undefined}
         footer={
           <>
             <Button variant="secondary" onClick={() => setModal(false)} disabled={busy}>{t('common.cancel', 'Cancel')}</Button>
@@ -545,6 +569,17 @@ function MyTokenPanel({
               <small className="block text-[12px] text-ink-2 mt-0.5">{token.stage_message ?? ''}</small>
             </div>
           </div>
+
+          <GraceStatusBanner grace={token.grace} />
+
+          {token.status === 'CANCELLED' && token.cancellation_reason === 'NO_SHOW_GRACE_PERIOD_EXPIRED' && (
+            <div className="mt-3 rounded-md border border-alert/40 bg-alert-soft px-4 py-3" role="alert">
+              <b className="flex items-center gap-1.5 text-sm text-alert"><AlertTriangle size={15} aria-hidden /> {t('arrival.autoCancelledTitle', 'Token cancelled')}</b>
+              <p className="mt-1 text-[13px] text-ink">{t('arrival.autoCancelledBody', 'Your token was cancelled because you did not check in within the grace period. You can take a new token.')}</p>
+            </div>
+          )}
+
+          <DepartureGuidancePanel token={token} />
 
           {token.scheduled_for && (
             <p className="mt-2 text-[13px] text-info">Rescheduled for {token.scheduled_for}. Your earlier ticket history is preserved.</p>

@@ -13,12 +13,18 @@ from .user import utcnow
 
 class Counter(Base):
     __tablename__ = "counters"
-    __table_args__ = (UniqueConstraint("office_id", "number", name="uq_counter_office_number"),)
+    __table_args__ = (
+        UniqueConstraint("office_id", "number", name="uq_counter_office_number"),
+        UniqueConstraint("office_id", "code", name="uq_counter_office_code"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     office_id: Mapped[int] = mapped_column(ForeignKey("offices.id", ondelete="CASCADE"), index=True)
     number: Mapped[int] = mapped_column(Integer)
+    # Human-readable code, unique within the office when provided (nullable).
+    code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     name: Mapped[str] = mapped_column(String(80), default="")
+    description: Mapped[str] = mapped_column(String(300), default="")
     status: Mapped[str] = mapped_column(String(20), default=CounterStatus.AVAILABLE.value, index=True)
     staff_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # The token currently being served is derived from tokens.counter_id + status;
@@ -79,3 +85,29 @@ class StaffAssignment(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+    services: Mapped[list[StaffAssignmentService]] = relationship(
+        back_populates="assignment", cascade="all, delete-orphan"
+    )
+
+
+class StaffAssignmentService(Base):
+    """Optional per-assignment service scope.
+
+    When a row exists for an assignment, the staff member may only serve the
+    listed services at that counter. When no rows exist, the assignment is
+    unrestricted: the member may serve every service the counter handles.
+    """
+
+    __tablename__ = "staff_assignment_services"
+    __table_args__ = (
+        UniqueConstraint("assignment_id", "service_id", name="uq_staff_assignment_service"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    assignment_id: Mapped[int] = mapped_column(
+        ForeignKey("staff_assignments.id", ondelete="CASCADE"), index=True
+    )
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"), index=True)
+
+    assignment: Mapped[StaffAssignment] = relationship(back_populates="services")

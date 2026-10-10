@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..db import Base
@@ -19,6 +19,20 @@ class Office(Base):
     name: Mapped[str] = mapped_column(String(160))
     address: Mapped[str] = mapped_column(String(255), default="")
     location_instructions: Mapped[str] = mapped_column(String(300), default="")
+    # Structured address/contact fields for office administration. Defaults keep
+    # the original not-null shape so existing rows stay valid after migration.
+    city: Mapped[str] = mapped_column(String(80), default="")
+    state: Mapped[str] = mapped_column(String(80), default="")
+    pincode: Mapped[str] = mapped_column(String(12), default="")
+    contact_email: Mapped[str] = mapped_column(String(160), default="")
+    contact_phone: Mapped[str] = mapped_column(String(32), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    # Geo coordinates for smart-arrival travel estimates. Nullable because some
+    # offices may not have a precise pin yet; recommendations skip those safely.
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    open_time: Mapped[str] = mapped_column(String(5), default="09:30")
+    close_time: Mapped[str] = mapped_column(String(5), default="18:00")
     working_hours: Mapped[str] = mapped_column(String(60), default="09:30-18:00")
     working_days: Mapped[str] = mapped_column(String(60), default="mon,tue,wed,thu,fri,sat")
     # Office-configurable policy values (no hard-coded government rules).

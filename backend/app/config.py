@@ -44,8 +44,22 @@ class Settings(BaseSettings):
     arrival_buffer_min: int = 15
     incident_response_min: int = 30
 
+    # --- Smart arrival: routing / travel-time provider ---
+    # provider: "mock" (offline, clearly labelled), "osrm" (self-hostable engine),
+    # or "none" (disable travel estimates, fall back to straight-line/mock only on demand).
+    routing_provider: str = "mock"
+    routing_base_url: str = "https://router.project-osrm.org"
+    routing_timeout_sec: float = 5.0
+    routing_cache_ttl_sec: int = 600
+    default_travel_mode: str = "driving"
+    # Safety buffer added on top of the travel estimate when advising departure time.
+    departure_buffer_min: int = 10
+
     service_duration_min: float = 6.2
     no_show_grace_min: int = 3
+    # Grace window (seconds) before an un-checked-in token is auto-cancelled once
+    # the previous token at the counter completes service. Default 300s (5 minutes).
+    grace_period_seconds: int = 300
     eta_alert_threshold_min: int = 10
     sla_target_wait_min: int = 20
     rate_limit_enabled: bool = True

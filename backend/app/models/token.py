@@ -81,6 +81,21 @@ class Token(Base):
     called_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Smart arrival: routing estimate captured when the citizen shared a location ---
+    travel_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    travel_distance_km: Mapped[float | None] = mapped_column(Float, nullable=True)
+    travel_mode: Mapped[str] = mapped_column(String(20), default="")
+    travel_provider: Mapped[str] = mapped_column(String(20), default="")
+    travel_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Automatic no-show grace window (starts when the previous token completes) ---
+    grace_state: Mapped[str] = mapped_column(String(20), default="NOT_STARTED", index=True)
+    grace_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    grace_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_reason: Mapped[str] = mapped_column(String(60), default="")
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

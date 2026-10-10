@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..errors import ApiException
 from ..models import Token, TokenEvent, TokenSequence, TokenStatus
-from ..models.enums import TokenStage
+from ..models.enums import GraceState, TokenStage
 
 # ---------------------------------------------------------------------------
 # State machine (spec section 10)
@@ -190,6 +190,20 @@ def apply_transition(
         setattr(token, field, utcnow())
     if to_status == TokenStatus.WAITING.value and from_status == TokenStatus.SKIPPED.value:
         token.deferrals += 1
+    # Keep the no-show grace window in step with the token lifecycle: checking in
+    # closes it as ARRIVED; any terminal/handled move stops an active countdown.
+    if token.grace_state == GraceState.ACTIVE.value:
+        if to_status == TokenStatus.ARRIVED.value:
+            token.grace_state = GraceState.ARRIVED.value
+        elif to_status in (
+            TokenStatus.CALLED.value,
+            TokenStatus.SERVING.value,
+            TokenStatus.SKIPPED.value,
+            TokenStatus.CANCELLED.value,
+            TokenStatus.COMPLETED.value,
+            TokenStatus.EXPIRED.value,
+        ):
+            token.grace_state = GraceState.CANCELLED.value
     db.flush()
     record_event(db, token, from_status=from_status, to_status=to_status, note=note, actor_id=actor_id, actor_role=actor_role)
     return token

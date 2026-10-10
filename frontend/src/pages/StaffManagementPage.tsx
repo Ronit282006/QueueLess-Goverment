@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, KeyRound, MailCheck, Search, ShieldCheck, SlidersHorizontal, UserCog, UserPlus } from 'lucide-react'
+import { Check, KeyRound, MailCheck, Pencil, Power, Search, ShieldCheck, SlidersHorizontal, UserCog, UserPlus } from 'lucide-react'
 import {
   Badge,
   Button,
   Card,
   EmptyState,
   FormField,
+  Modal,
   OtpInput,
   Page,
+  SegmentedControl,
   Skeleton,
   Stepper,
   useToast,
@@ -32,6 +34,15 @@ export default function StaffManagementPage() {
   const [members, setMembers] = useState<StaffMember[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
+  const [status, setStatus] = useState<'all' | 'active' | 'inactive'>('all')
+
+  const [editOpen, setEditOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<StaffMember | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editEmail, setEditEmail] = useState('')
+  const [editError, setEditError] = useState<string | undefined>()
+  const [editBusy, setEditBusy] = useState(false)
+  const [rowBusy, setRowBusy] = useState<number | null>(null)
 
   const [step, setStep] = useState(0)
   const [fullName, setFullName] = useState('')
@@ -48,16 +59,20 @@ export default function StaffManagementPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setMembers(await api.adminStaff())
+      const params: { search?: string; status?: 'active' | 'inactive' } = {}
+      if (query.trim()) params.search = query.trim()
+      if (status !== 'all') params.status = status
+      setMembers(await api.adminStaff(params))
     } catch (err) {
       toast.error(t('sm.loadFailed', 'Could not load the staff directory'), (err as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [t, toast])
+  }, [query, status, t, toast])
 
   useEffect(() => {
-    void load()
+    const id = window.setTimeout(() => void load(), 250)
+    return () => window.clearTimeout(id)
   }, [load])
 
   useEffect(() => {
@@ -65,12 +80,6 @@ export default function StaffManagementPage() {
     const id = window.setInterval(() => setResendIn((v) => v - 1), 1000)
     return () => window.clearInterval(id)
   }, [resendIn > 0])
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return members
-    return members.filter((m) => m.full_name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q))
-  }, [members, query])
 
   if (!user || user.role !== 'ADMIN') {
     return (
@@ -163,6 +172,56 @@ export default function StaffManagementPage() {
     setCreated(null)
     setResendIn(0)
     setFieldErrors({})
+  }
+
+  const openEdit = (member: StaffMember) => {
+    setEditTarget(member)
+    setEditName(member.full_name)
+    setEditEmail(member.email)
+    setEditError(undefined)
+    setEditOpen(true)
+  }
+
+  const submitEdit = async () => {
+    if (!editTarget) return
+    if (!editName.trim()) {
+      setEditError(t('err.required', 'This field is required.'))
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(editEmail.trim())) {
+      setEditError(t('err.invalidEmail', 'Enter a valid email address.'))
+      return
+    }
+    setEditBusy(true)
+    try {
+      const result = await api.adminUpdateStaff(editTarget.id, {
+        full_name: editName.trim(),
+        email: editEmail.trim().toLowerCase(),
+      })
+      setMembers((prev) => prev.map((m) => (m.id === result.id ? result : m)))
+      toast.success(t('sm.updated', 'Staff member updated'), result.full_name)
+      setEditOpen(false)
+    } catch (err) {
+      toast.error(t('admin.actionFailed', 'That did not work'), (err as Error).message)
+    } finally {
+      setEditBusy(false)
+    }
+  }
+
+  const toggleMemberStatus = async (member: StaffMember) => {
+    setRowBusy(member.id)
+    try {
+      const result = await api.adminSetStaffStatus(member.id, !member.is_active)
+      setMembers((prev) => prev.map((m) => (m.id === result.id ? result : m)))
+      toast.success(
+        result.is_active ? t('sm.activated', 'Staff activated') : t('sm.deactivated', 'Staff deactivated'),
+        result.full_name,
+      )
+    } catch (err) {
+      toast.error(t('admin.actionFailed', 'That did not work'), (err as Error).message)
+    } finally {
+      setRowBusy(null)
+    }
   }
 
   return (
@@ -326,31 +385,41 @@ export default function StaffManagementPage() {
 
         {/* Directory */}
         <Card kicker={t('sm.directory', 'Staff directory')} title={t('sm.membersCount', 'Staff members ({n})').replace('{n}', String(members.length))}>
-          <label className="relative block mb-4">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden />
-            <span className="sr-only">{t('sm.search', 'Search')}</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t('sm.searchPlaceholder', 'Search by name or email')}
-              className="w-full rounded-md border border-line bg-surface pl-9 pr-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-3 min-h-[44px] focus:outline-none focus:ring-2 focus:border-brand focus:ring-brand/25"
+          <div className="flex flex-wrap items-center gap-3 mb-4">
+            <label className="relative block flex-1 min-w-[200px]">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none" aria-hidden />
+              <span className="sr-only">{t('sm.search', 'Search')}</span>
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t('sm.searchPlaceholder', 'Search by name or email')}
+                className="w-full rounded-md border border-line bg-surface pl-9 pr-3.5 py-2.5 text-[15px] text-ink placeholder:text-ink-3 min-h-[44px] focus:outline-none focus:ring-2 focus:border-brand focus:ring-brand/25"
+              />
+            </label>
+            <SegmentedControl
+              options={[
+                { value: 'all', label: t('om.filterAll', 'All') },
+                { value: 'active', label: t('om.filterActive', 'Active') },
+                { value: 'inactive', label: t('om.filterInactive', 'Inactive') },
+              ]}
+              value={status}
+              onChange={setStatus}
+              label={t('om.statusFilter', 'Filter by status')}
             />
-          </label>
+          </div>
 
           {loading && !members.length ? (
             <Skeleton lines={4} />
           ) : members.length === 0 ? (
             <EmptyState
               icon={<UserCog size={22} />}
-              title={t('sm.noStaff', 'No staff accounts yet')}
-              hint={t('sm.noStaffHint', 'Create the first staff account on the left.')}
+              title={query || status !== 'all' ? t('sm.noResults', 'No staff match your search.') : t('sm.noStaff', 'No staff accounts yet')}
+              hint={query || status !== 'all' ? t('sm.noResultsHint', 'Try a different name or email.') : t('sm.noStaffHint', 'Create the first staff account on the left.')}
             />
-          ) : filtered.length === 0 ? (
-            <EmptyState icon={<Search size={22} />} title={t('sm.noResults', 'No staff match your search.')} hint={t('sm.noResultsHint', 'Try a different name or email.')} />
           ) : (
             <ul className="m-0 p-0 list-none flex flex-col gap-2">
-              {filtered.map((member) => (
+              {members.map((member) => (
                 <li key={member.id} className="rounded-md border border-line p-3.5 flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="m-0 text-[15px] font-semibold text-ink truncate">{member.full_name}</p>
@@ -367,18 +436,76 @@ export default function StaffManagementPage() {
                       </Badge>
                     </div>
                   </div>
-                  <Link
-                    to={`/admin/assignments?staff=${member.id}&office=${member.offices[0] ?? ''}`}
-                    className="inline-flex items-center justify-center gap-2 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft hover:border-brand/35 shadow-sm transition-all active:scale-[0.985] min-h-[34px]"
-                  >
-                    <SlidersHorizontal size={14} aria-hidden /> {t('sm.assignCounters', 'Assign counters')}
-                  </Link>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button size="sm" variant="secondary" icon={<Pencil size={14} />} onClick={() => openEdit(member)}>
+                      {t('om.edit', 'Edit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={member.is_active ? 'dangerGhost' : 'outline'}
+                      loading={rowBusy === member.id}
+                      icon={<Power size={14} />}
+                      onClick={() => void toggleMemberStatus(member)}
+                    >
+                      {member.is_active ? t('om.deactivate', 'Deactivate') : t('om.activate', 'Activate')}
+                    </Button>
+                    <Link
+                      to={`/admin/assignments?staff=${member.id}&office=${member.offices[0] ?? ''}`}
+                      className="inline-flex items-center justify-center gap-2 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft hover:border-brand/35 shadow-sm transition-all active:scale-[0.985] min-h-[34px]"
+                    >
+                      <SlidersHorizontal size={14} aria-hidden /> {t('sm.assignCounters', 'Assign counters')}
+                    </Link>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </Card>
       </div>
+
+      <Modal
+        open={editOpen}
+        onClose={() => (editBusy ? undefined : setEditOpen(false))}
+        title={t('sm.editTitle', 'Edit staff member')}
+        description={editTarget ? editTarget.email : undefined}
+        label="staff-edit-form"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditOpen(false)} disabled={editBusy}>
+              {t('common.cancel', 'Cancel')}
+            </Button>
+            <Button loading={editBusy} onClick={() => void submitEdit()} icon={<Check size={16} />}>
+              {t('om.save', 'Save changes')}
+            </Button>
+          </>
+        }
+      >
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submitEdit()
+          }}
+          noValidate
+        >
+          <FormField
+            id="staff-edit-name"
+            label={t('sm.fullName', 'Full name')}
+            value={editName}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditName(e.target.value)}
+            required
+          />
+          <FormField
+            id="staff-edit-email"
+            label={t('sm.email', 'Work email')}
+            type="email"
+            value={editEmail}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEditEmail(e.target.value)}
+            error={editError}
+            required
+          />
+        </form>
+      </Modal>
     </Page>
   )
 }

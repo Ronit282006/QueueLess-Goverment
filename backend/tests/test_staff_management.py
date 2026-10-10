@@ -271,3 +271,103 @@ def test_assignment_validations(client):
         }).status_code == 403
     finally:
         db.close()
+
+
+def test_counter_assignment_service_scope(client):
+    from app.db import SessionLocal
+    from app.models import Counter, CounterService, Department, Office, Service, User
+    from app.security import create_access_token, hash_password
+
+    db = SessionLocal()
+    try:
+        headers = _admin_headers(db)
+        office = db.scalar(select(Office).order_by(Office.id))
+        services = db.scalars(
+            select(Service)
+            .join(Department, Service.department_id == Department.id)
+            .where(Department.office_id == office.id)
+            .order_by(Service.id)
+        ).all()
+        while len(services) < 3:
+            department = db.scalar(select(Department).where(Department.office_id == office.id))
+            if department is None:
+                department = Department(office_id=office.id, name="Scope Dept")
+                db.add(department)
+                db.flush()
+            extra = Service(department_id=department.id, name=f"Scoped Service {len(services)}", code=f"scoped-{uuid.uuid4().hex[:6]}")
+            db.add(extra)
+            db.commit()
+            services = db.scalars(
+                select(Service)
+                .join(Department, Service.department_id == Department.id)
+                .where(Department.office_id == office.id)
+                .order_by(Service.id)
+            ).all()
+        svc_a, svc_b, svc_c = services[0], services[1], services[2]
+
+        counter = Counter(office_id=office.id, number=900, name="Scoped Counter")
+        db.add(counter)
+        db.flush()
+        db.add_all([
+            CounterService(counter_id=counter.id, service_id=svc_a.id),
+            CounterService(counter_id=counter.id, service_id=svc_b.id),
+        ])
+        staff = User(email=f"staff-scope-{uuid.uuid4().hex[:8]}@example.com", full_name="Scoped",
+                     password_hash=hash_password("Str0ng-pass"), role="STAFF")
+        db.add(staff)
+        db.commit()
+        staff_id = staff.id
+        staff_headers = {"Authorization": f"Bearer {create_access_token(subject=staff.id, role=staff.role)}"}
+
+        # Scoped assignment: only svc_a may be served at this counter.
+        put = client.put(f"/api/admin/staff/{staff_id}/assignments", headers=headers, json={
+            "office_id": office.id, "counter_ids": [counter.id],
+            "services_by_counter": {str(counter.id): [svc_a.id]},
+        })
+        assert put.status_code == 200, put.text
+        row = next(a for a in client.get(f"/api/admin/staff/{staff_id}/assignments", headers=headers).json()
+                   if a["counter_id"] == counter.id)
+        assert row["service_ids"] == [svc_a.id]
+
+        # The staff scope exposes exactly the assigned service (so the console
+        # can offer the service the member must serve, even if the public
+        # catalog hides it).
+        scope = client.get("/api/staff/scope", headers=staff_headers)
+        assert scope.status_code == 200
+        scope_service_ids = {s["id"] for s in scope.json()["services"]}
+        assert svc_a.id in scope_service_ids
+        assert svc_b.id not in scope_service_ids
+        assert svc_c.id not in scope_service_ids
+
+        # In-scope service clears the scope gate (empty queue -> queue_empty, not 403).
+        allowed = client.post(f"/api/staff/counters/{counter.id}/call-next",
+                              json={"service_id": svc_a.id}, headers=staff_headers)
+        assert allowed.status_code != 403, allowed.text
+
+        # Out-of-scope service (served by the counter but not assigned) is refused.
+        denied = client.post(f"/api/staff/counters/{counter.id}/call-next",
+                             json={"service_id": svc_b.id}, headers=staff_headers)
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "service_not_assigned"
+
+        # A service the counter does not serve cannot be scoped to it.
+        bad = client.put(f"/api/admin/staff/{staff_id}/assignments", headers=headers, json={
+            "office_id": office.id, "counter_ids": [counter.id],
+            "services_by_counter": {str(counter.id): [svc_c.id]},
+        })
+        assert bad.status_code == 422
+        assert bad.json()["error"]["code"] == "service_not_served_by_counter"
+
+        # Omitting the scope leaves the assignment unrestricted (backward compatible).
+        plain = client.put(f"/api/admin/staff/{staff_id}/assignments", headers=headers, json={
+            "office_id": office.id, "counter_ids": [counter.id],
+        })
+        assert plain.status_code == 200, plain.text
+        row = next(a for a in client.get(f"/api/admin/staff/{staff_id}/assignments", headers=headers).json()
+                   if a["counter_id"] == counter.id)
+        assert row["service_ids"] == []
+        now_allowed = client.post(f"/api/staff/counters/{counter.id}/call-next",
+                                  json={"service_id": svc_b.id}, headers=staff_headers)
+        assert now_allowed.status_code != 403, now_allowed.text
+    finally:
+        db.close()

@@ -1,8 +1,18 @@
 import type {
   AdminCounter,
+  AdminDepartment,
+  AdminOffice,
+  AdminOfficeCounter,
+  AdminOfficeDetail,
+  AdminOfficeService,
   AuthResponse,
   AuthUser,
+  CounterGrace,
+  DepartureGuidance,
   Office,
+  OfficeInput,
+  OfficeRecommendations,
+  OfficeServiceInput,
   QueueSnapshot,
   Service,
   StaffAssignment,
@@ -13,6 +23,7 @@ import type {
   StaffOTPVerifyResult,
   StaffScope,
   Token,
+  TravelEstimate,
 } from './types'
 
 export const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:8000'
@@ -70,11 +81,51 @@ export const api = {
   queue: (serviceId: number, officeId?: number) =>
     request<QueueSnapshot>(`/api/queue?service_id=${serviceId}${officeId ? `&office_id=${officeId}` : ''}`),
 
+  // Smart arrival
+  arrivalConfig: () =>
+    request<{ provider: string; mode: string; live: boolean; departure_buffer_min: number }>('/api/arrival/config'),
+  recommendOffices: (
+    serviceId: number,
+    latitude: number,
+    longitude: number,
+    mode?: string,
+    selectedOfficeId?: number,
+  ) =>
+    request<OfficeRecommendations>(
+      `/api/arrival/offices?service_id=${serviceId}&lat=${latitude}&lng=${longitude}` +
+        `${mode ? `&mode=${mode}` : ''}${selectedOfficeId ? `&selected_office_id=${selectedOfficeId}` : ''}`,
+    ),
+  routeEstimate: (officeId: number, latitude: number, longitude: number, mode?: string) =>
+    request<{ available: boolean; office_id: number; office_name?: string; travel: TravelEstimate | null; message?: string }>(
+      `/api/arrival/route?office_id=${officeId}&lat=${latitude}&lng=${longitude}${mode ? `&mode=${mode}` : ''}`,
+    ),
+  tokenGuidance: (reference: string, latitude: number, longitude: number, mode?: string) =>
+    request<DepartureGuidance>(
+      `/api/arrival/tokens/${reference}?lat=${latitude}&lng=${longitude}${mode ? `&mode=${mode}` : ''}`,
+    ),
+  scheduleReminder: (reference: string, latitude: number, longitude: number, mode?: string) =>
+    request<{ guidance: DepartureGuidance; reminder: { scheduled: boolean; due_at: string | null; status: string | null } }>(
+      `/api/arrival/tokens/${reference}/reminder?lat=${latitude}&lng=${longitude}${mode ? `&mode=${mode}` : ''}`,
+      { method: 'POST' },
+    ),
+
   // Tokens
-  createToken: (serviceId: number, officeId?: number, documentsConfirmed: string[] = []) =>
+  createToken: (
+    serviceId: number,
+    officeId?: number,
+    documentsConfirmed: string[] = [],
+    location?: { latitude: number; longitude: number; travel_mode?: string } | null,
+  ) =>
     request<Token>('/api/tokens', {
       method: 'POST',
-      body: JSON.stringify({ service_id: serviceId, office_id: officeId ?? null, documents_confirmed: documentsConfirmed }),
+      body: JSON.stringify({
+        service_id: serviceId,
+        office_id: officeId ?? null,
+        documents_confirmed: documentsConfirmed,
+        latitude: location?.latitude ?? null,
+        longitude: location?.longitude ?? null,
+        travel_mode: location?.travel_mode ?? null,
+      }),
     }),
   token: (reference: string) => request<Token>(`/api/tokens/${reference}`),
   transition: (reference: string, status: string) =>
@@ -131,6 +182,10 @@ export const api = {
   skip: (counterId: number) => request<Token>(`/api/staff/counters/${counterId}/skip`, { method: 'POST' }),
   staffQueue: (officeId: number, serviceId: number) =>
     request<QueueSnapshot>(`/api/staff/queue?office_id=${officeId}&service_id=${serviceId}`),
+  counterGrace: (counterId: number, serviceId?: number) =>
+    request<CounterGrace>(
+      `/api/staff/counters/${counterId}/grace${serviceId ? `?service_id=${serviceId}` : ''}`,
+    ),
 
   // Admin
   adminHealth: () => request<Record<string, unknown>>('/api/admin/health'),
@@ -161,8 +216,21 @@ export const api = {
     request<Record<string, unknown>>(`/api/admin/offices/${officeId}/holidays`, { method: 'POST', body: JSON.stringify({ holiday_date: holidayDate, name }) }),
   deleteOfficeHoliday: (officeId: number, holidayId: number) =>
     request<Record<string, unknown>>(`/api/admin/offices/${officeId}/holidays/${holidayId}`, { method: 'DELETE' }),
-  updateOfficeLocation: (officeId: number, address: string, locationInstructions: string) =>
-    request<Record<string, unknown>>(`/api/admin/offices/${officeId}/location`, { method: 'PATCH', body: JSON.stringify({ address, location_instructions: locationInstructions }) }),
+  updateOfficeLocation: (
+    officeId: number,
+    address: string,
+    locationInstructions: string,
+    coordinates?: { latitude: number | null; longitude: number | null },
+  ) =>
+    request<Record<string, unknown>>(`/api/admin/offices/${officeId}/location`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        address,
+        location_instructions: locationInstructions,
+        latitude: coordinates?.latitude ?? null,
+        longitude: coordinates?.longitude ?? null,
+      }),
+    }),
 
   // Admin · Staff management & counter assignments
   adminStaffOtp: (fullName: string, email: string, password: string, confirmPassword: string) =>
@@ -174,16 +242,81 @@ export const api = {
     request<StaffOTPVerifyResult>('/api/admin/staff/otp/verify', { method: 'POST', body: JSON.stringify({ email, otp }) }),
   adminCreateStaff: (email: string) =>
     request<StaffCreatedResult>('/api/admin/staff', { method: 'POST', body: JSON.stringify({ email }) }),
-  adminStaff: () => request<StaffMember[]>('/api/admin/staff'),
+  adminStaff: (params?: { search?: string; status?: 'active' | 'inactive' }) => {
+    const qs = new URLSearchParams()
+    if (params?.search) qs.set('search', params.search)
+    if (params?.status) qs.set('status', params.status)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<StaffMember[]>(`/api/admin/staff${suffix}`)
+  },
+  adminUpdateStaff: (userId: number, payload: { full_name?: string; email?: string; is_active?: boolean }) =>
+    request<StaffMember>(`/api/admin/staff/${userId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  adminSetStaffStatus: (userId: number, isActive: boolean) =>
+    request<StaffMember>(`/api/admin/staff/${userId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ is_active: isActive }),
+    }),
   adminStaffAssignments: (userId: number) =>
     request<StaffAssignment[]>(`/api/admin/staff/${userId}/assignments`),
-  adminSetStaffAssignments: (userId: number, payload: { office_id: number; counter_ids: number[]; title: string; shift_start: string; shift_end: string }) =>
+  adminSetStaffAssignments: (userId: number, payload: { office_id: number; counter_ids: number[]; services_by_counter?: Record<number, number[]>; title: string; shift_start: string; shift_end: string }) =>
     request<{ office_id: number; assignments: StaffAssignment[]; staff_id: number }>(
       `/api/admin/staff/${userId}/assignments`,
       { method: 'PUT', body: JSON.stringify(payload) },
     ),
   adminCounters: (officeId: number) =>
     request<AdminCounter[]>(`/api/admin/counters?office_id=${officeId}`),
+
+  // Admin · Offices
+  adminOffices: (params?: { search?: string; status?: 'active' | 'inactive' }) => {
+    const qs = new URLSearchParams()
+    if (params?.search) qs.set('search', params.search)
+    if (params?.status) qs.set('status', params.status)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return request<AdminOffice[]>(`/api/admin/offices${suffix}`)
+  },
+  adminCreateOffice: (payload: OfficeInput) =>
+    request<AdminOffice>('/api/admin/offices', { method: 'POST', body: JSON.stringify(payload) }),
+  adminOffice: (officeId: number) => request<AdminOfficeDetail>(`/api/admin/offices/${officeId}`),
+  adminUpdateOffice: (officeId: number, payload: Partial<OfficeInput>) =>
+    request<AdminOffice>(`/api/admin/offices/${officeId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  adminSetOfficeStatus: (officeId: number, isActive: boolean) =>
+    request<AdminOffice>(`/api/admin/offices/${officeId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ is_active: isActive }),
+    }),
+  adminOfficeServices: (officeId: number, includeInactive = false) =>
+    request<AdminOfficeService[]>(`/api/admin/offices/${officeId}/services${includeInactive ? '?include_inactive=true' : ''}`),
+  adminOfficeDepartments: (officeId: number) =>
+    request<AdminDepartment[]>(`/api/admin/offices/${officeId}/departments`),
+  adminCreateOfficeDepartment: (officeId: number, payload: { name: string; description?: string }) =>
+    request<AdminDepartment>(`/api/admin/offices/${officeId}/departments`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  adminCreateOfficeService: (officeId: number, payload: OfficeServiceInput) =>
+    request<AdminOfficeService>(`/api/admin/offices/${officeId}/services`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  adminUpdateService: (serviceId: number, payload: Partial<OfficeServiceInput>) =>
+    request<AdminOfficeService>(`/api/admin/services/${serviceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  adminOfficeCounters: (officeId: number) =>
+    request<AdminOfficeCounter[]>(`/api/admin/offices/${officeId}/counters`),
+  adminCreateCounter: (officeId: number, payload: { number: number; name: string; code?: string | null; description?: string; status?: string; service_ids?: number[] }) =>
+    request<AdminOfficeCounter>(`/api/admin/offices/${officeId}/counters`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  adminUpdateCounter: (counterId: number, payload: { number?: number; name?: string; code?: string | null; description?: string; status?: string; service_ids?: number[] }) =>
+    request<AdminOfficeCounter>(`/api/admin/counters/${counterId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  adminSetCounterStatus: (counterId: number, status: string) =>
+    request<AdminOfficeCounter>(`/api/admin/counters/${counterId}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
 
   // Analytics
   analytics: {

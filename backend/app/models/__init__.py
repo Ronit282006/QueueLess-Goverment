@@ -1,20 +1,23 @@
 """QueueLess SQLAlchemy models."""
 from .catalog import Department, Office, OfficeHoliday, OfficeIncident, Service
-from .counter import Counter, CounterService, StaffAssignment
+from .counter import Counter, CounterService, StaffAssignment, StaffAssignmentService
 from .enums import (
     CounterStatus,
     DataOrigin,
+    GraceState,
     NotificationKind,
     NotificationStatus,
     RecommendationStatus,
+    ReminderStatus,
     Role,
     TokenStage,
     TokenStatus,
+    TravelMode,
 )
 from .feedback import Feedback
 from .governance import CounterRecommendation, PriorityRule
 from .history import QueueSnapshot, ServiceTimeRecord
-from .notification import Notification, NotificationLog
+from .notification import Notification, NotificationLog, ScheduledReminder
 from .ops import AuditLog, SystemMetric
 from .prediction import Prediction
 from .token import Token, TokenEvent, TokenSequence
@@ -31,6 +34,7 @@ __all__ = [
     "Department",
     "Feedback",
     "EmailOTPChallenge",
+    "GraceState",
     "Notification",
     "NotificationKind",
     "NotificationLog",
@@ -42,10 +46,13 @@ __all__ = [
     "Prediction",
     "QueueSnapshot",
     "RecommendationStatus",
+    "ReminderStatus",
     "Role",
+    "ScheduledReminder",
     "Service",
     "ServiceTimeRecord",
     "StaffAssignment",
+    "StaffAssignmentService",
     "StaffOTPChallenge",
     "SystemMetric",
     "Token",
@@ -53,5 +60,6 @@ __all__ = [
     "TokenSequence",
     "TokenStage",
     "TokenStatus",
+    "TravelMode",
     "User",
 ]
